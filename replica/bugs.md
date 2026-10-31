@@ -64,25 +64,49 @@ Evidence: Playwright output for `e2e/manual-intake-layout.spec.ts`, 1 passed.
 
 Status: Passed 2026-10-31. No UI defect was reproduced.
 
-## To check
+## Manual intake authorization and selection QA
 
-### QA-06: Actual local file-picker path not exercised
+### QA-06: Browser file chooser selection and local extraction
 
-- Severity: untriaged; verification gap, not a reproduced product bug
-- Flow / case: F02-N1
+- Severity: no product defect reproduced; OS dialog visual coverage remains limited
+- Flow / case: F02-E3
 - Screen: Evidence / Manual documents
-- Build: dirty `main` worktree  Browser / device: Chrome, authenticated development session
+- Build: `main`  Browser / device: Chromium 159.0.8136.0, authenticated temporary development account
 
 Steps
-1. Select an actual local PDF, DOCX, JPG, or PNG through the application's file input.
+1. With upload limits set only in temporary local processes, open an authenticated synthetic analysis.
+2. Click **Choose a manual to extract locally**.
+3. Select the synthetic 629-byte PDF through the browser FileChooser.
 
-Expected: The browser extracts the file locally and offers the requested original for authenticated save when limits are enabled.
+Expected: The chosen file is parsed locally. The original is not sent to the API unless **Save original** is selected.
 
-Actual: The browser extension denied local-file access during this session. A synthetic QA PDF generated in the app was used to exercise extraction, database save/read-back, reload, retrieval, and review instead.
+Actual: The visible label opened a FileChooser event. Chromium selected the synthetic PDF, and PlannerMC displayed one extracted page and the expected SHA-256 prefix. Network capture showed no request to the document upload endpoint. The temporary account had zero manual-document rows.
 
-Evidence: Authenticated browser QA and the `plannermc-dev` synthetic record documented in `replica/build-log.md`.
+Evidence: Browser accessibility snapshot and API network list from the 2026-10-31 QA pass; see `replica/test-plan.md` and `replica/build-log.md`.
 
-Status: Verify with a real file picker after configured development limits are re-enabled for controlled QA.
+Status: Application file selection and local extraction passed. Playwright handled the chooser with `FileChooser.setFiles`; Windows dialog rendering and keyboard navigation within the dialog were not tested.
+
+### QA-07: Manual download denied to a second account
+
+- Severity: negative security check passed; no defect reproduced
+- Flow / case: F02-N2
+- Screen: Authenticated document API
+- Build: `main`  Browser / device: Fastify API and Supabase `plannermc-dev`
+
+Steps
+1. Create a confirmed temporary Auth identity without sending an invitation.
+2. Provision its profile in the same workspace as the synthetic QA manual's owner.
+3. Sign in, load the account's workspace, and request the other owner's document ID.
+
+Expected: The valid second account can use its workspace but cannot retrieve the other owner's manual.
+
+Actual: Workspace read returned HTTP 200. Manual download returned HTTP 404 with the generic unavailable message. The API upload configuration remained disabled.
+
+Evidence: Controlled API result recorded in the 2026-10-31 `replica/build-log.md` entry.
+
+Status: Passed 2026-10-31. Temporary Auth identity, profile, and all QA rows were removed.
+
+## To check
 
 ### QA-01: Empty analyses are persisted before intake details
 
