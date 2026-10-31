@@ -148,3 +148,9 @@ Actual: The action remained enabled. Selecting it displayed the missing acknowle
 Evidence: Authenticated browser interaction and code-path review of `approvePm` in `src/PlannerWorkspace.tsx`. No valid approval was performed.
 
 Status: Approval protection passed. Consider disabling the action until required checks pass as a UX improvement; no confirmed approval bypass was reproduced.
+
+## Passed QA: PM revision lifecycle
+
+No confirmed revision lifecycle defect was reproduced. The full local Playwright suite passed 6/6 after updating stale accessible-label selectors in the lifecycle and planner-data tests and making one exact-text assertion unambiguous. Hosted development checks passed for required summary validation, immutable history/read-back, stale-tab HTTP 409, and identical-request idempotency.
+
+The browser logged the stale-tab HTTP 409 as a failed network resource during manual QA. This is the expected conflict response, not an application failure. The automated test did not exercise the hosted API; see `replica/test-plan.md` for the separation of evidence.

@@ -20,11 +20,10 @@ Date: 2026-10-31.
 - The first planner-data slice was kept limited to planner-entered information. The authenticated backend is active in development; manual intake is now implemented for development only. The app must not imply that external research, AI generation, speech, or CMMS integration is active.
 - Keep the browser-local adapter as an explicitly labeled prototype mode. Mark its storage and sample catalog as local and synthetic.
 - The Supabase Auth/PostgreSQL choice and invitation-only account policy are now accepted in [ADR 0001](../../docs/adr/0001-supabase-auth-and-postgres.md). Initial production catalog and hosting decisions remain open.
-- The first Supabase/Fastify backend slice is being tracked under `.scratch/replica-backend/`; it does not establish production service behavior.
+- The Supabase/Fastify backend slice and hosted development QA are documented under `.scratch/replica-backend/`; they do not establish production service behavior.
 - Tracking issue: [01-planner-data-vertical-slice](issues/01-planner-data-vertical-slice.md).
 - Implemented the planner-data path and retained `/design`; see [build log](../../replica/build-log.md) and [`features.csv`](../../replica/features.csv) for partial and complete items.
-- `/replica-backend` is in progress; local or hosted Supabase behavior has not been exercised.
-- The completed authenticated planner-data backend and hosted development QA are recorded in `replica/build-log.md` and `.scratch/replica-backend/`; the bullets above describing backend work as pending are historical for the initial slice.
+- Hosted development Auth/API/persistence/ownership was smoke-verified; invitation delivery and production service behavior remain open. See `replica/build-log.md` and `.scratch/replica-backend/`.
 - User approved the next `/replica-build` slice: planner-provided source details → review and limitations → source reference in an editable PM draft. Track it in [02-planner-source-to-pm-draft](issues/02-planner-source-to-pm-draft.md).
 - Historical scope for issue 02: it used planner-provided notes only, while manual upload/OCR, research, generated technical content, and production limits were deferred pending Q2/Q3 choices. Issue 03 records the later manual-intake decision and implementation.
 - The source-to-PM reference implementation, applied dev migration, six passing validation cases, live read-back, and approval-blocker review are recorded in [the build log](../../replica/build-log.md). Issue [02](issues/02-planner-source-to-pm-draft.md) is resolved.
@@ -32,8 +31,15 @@ Date: 2026-10-31.
 - Q3 format choice is resolved for this slice; numeric byte/page limits remain unset until representative manuals and live development database use are measured. Production uploads stay disabled until capacity, plan, backups, retention, and a restore test are established.
 - Tracking issue: [03-local-manual-intake](issues/03-local-manual-intake.md).
 - Issue [03](issues/03-local-manual-intake.md) is resolved for implementation and requested checks. Chromium FileChooser selection/local extraction and second-account manual download denial passed with synthetic data; temporary identities, fixture, analysis rows, and processes were cleaned up. The Windows file dialog's visual appearance and keyboard navigation remain unverified because Playwright handled selection through `FileChooser.setFiles`. Numeric limits and production upload readiness remain open; see [test plan](../../replica/test-plan.md) and [build log](../../replica/build-log.md).
+- The `/replica-diff` assessment is in [`replica/parity.md`](../../replica/parity.md): 61.1/100 coverage against the nine tracked PlannerMC must-haves, not parity against a vendor app. No comparable original workflow screenshots or walkthrough are available.
+- Issue [04-pm-revision-lifecycle](issues/04-pm-revision-lifecycle.md) is resolved. The additive migration was applied to `plannermc-dev` only; hosted lifecycle QA and a focused local Playwright test passed. Evidence and retained synthetic QA data are documented in `replica/test-plan.md` and `replica/build-log.md`.
 
 ## Fog
 
 - Production deployment, initial catalog provisioning, external research/generation/speech vendors, numeric document limits, audio retention, and recovery targets remain unresolved. Local browser OCR is implemented for manual intake in development only.
 - No production project or production security properties are claimed. The original planner-data slice remains local unless Supabase mode is configured.
+- The PM revision lifecycle is verified in the synthetic development project. Production deployment and database state remain untouched and unverified.
+
+## Next flow step
+
+Issue 04 is resolved. The next suitable bounded MVP gap is a planner-confirmed split proposal when a PM exceeds 15 steps; the limit itself already exists. Other gaps and dependencies are ranked in `replica/parity.md`.

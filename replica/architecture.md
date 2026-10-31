@@ -147,6 +147,4 @@ Each milestone lists proposed screens (S-IDs), tables, and routes. These S-IDs n
 
 ## Next flow step
 
-The first planner-data vertical slice and the current backend implementation are recorded in [build-log.md](./build-log.md). The hosted development project and bounded Auth/API/persistence/ownership flow were smoke-verified; invitation email delivery remains unverified until SMTP is configured. No production project has been created. The MacroCap Labs logo is referenced from the URL recorded in [brand-reference.md](./brand-reference.md); hosting and reuse terms remain unverified.
-
-The `/replica-backend` implementation is in progress. Production credentials, production account/catalog provisioning, and deployment remain unconfigured.
+The first planner-data and manual-intake slices, plus hosted development QA, are recorded in [build-log.md](./build-log.md). The PM revision lifecycle is implemented and verified against local prototype storage and the migrated `plannermc-dev` project; production remains untouched. The `/replica-diff` assessment is recorded in [parity.md](./parity.md): it scores implementation coverage against PlannerMC's own MVP scope and does not claim parity with iMPS, GWOS-AI, or another original application. Invitation delivery remains unverified until SMTP is configured; production hosting, catalog provisioning, and deployment remain unconfigured. The MacroCap Labs logo is referenced from the URL recorded in [brand-reference.md](./brand-reference.md); hosting and reuse terms remain unverified.

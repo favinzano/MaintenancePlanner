@@ -35,7 +35,7 @@ async function openPlannerEditor(page: Page, name = "QA ONLY - Pump 001") {
   await page.getByLabel("Applicability to this equipment").selectOption("applicable");
   await page.getByLabel("Applicability details").fill("Applies only to synthetic test data.");
   await page.getByLabel("Additional limitations (one per line)").fill("Synthetic content; not a maintenance instruction.");
-  await page.getByLabel("I have reviewed these limitations and want to continue using only the planner-provided information.").check();
+  await page.getByLabel("I reviewed the available information and limitations and want to continue. Missing or unreadable manual text is not treated as evidence.").check();
   await page.getByRole("button", { name: "Continue to asset proposal" }).click();
   await expect(page.getByRole("heading", { name: "Select the assets to keep" })).toBeVisible();
   await scanAccessibility(page, "asset proposal");

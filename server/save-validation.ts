@@ -77,7 +77,10 @@ export function parseSaveBody(body: unknown): SaveBody {
         typeof pm.unresolvedSafetyAcknowledged !== "boolean" || !Array.isArray(pm.taskSteps) ||
         !pm.taskSteps.every((step) => typeof step === "string") ||
         !Array.isArray(pm.evidenceSourceIds) || !pm.evidenceSourceIds.every((id) => typeof id === "string" && uuidPattern.test(id)) ||
-        (pm.approvedAt !== undefined && typeof pm.approvedAt !== "string")) {
+        (pm.approvedAt !== undefined && typeof pm.approvedAt !== "string") ||
+        (pm.revisionNumber !== undefined && (!Number.isInteger(pm.revisionNumber) || Number(pm.revisionNumber) < 0)) ||
+        (pm.baseRevisionNumber !== undefined && (!Number.isInteger(pm.baseRevisionNumber) || Number(pm.baseRevisionNumber) < 0)) ||
+        (pm.changeSummary !== undefined && (typeof pm.changeSummary !== "string" || pm.changeSummary.length > 2000))) {
       throw Object.assign(new Error("The PM data is invalid."), { statusCode: 400 });
     }
     if (new Set(pm.evidenceSourceIds as string[]).size !== (pm.evidenceSourceIds as string[]).length) {

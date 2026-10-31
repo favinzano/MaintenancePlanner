@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
 import { getDocument as getPdfDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft } from "../src/domain/planner.js";
+import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../src/domain/planner.js";
 import { assertReviewedManualReferences, parseSaveBody, type SaveBody } from "./save-validation.js";
 import { MANUAL_CONTENT_TYPES, parseManualUploadDescriptor, readManualUploadConfig, verifyPdfPageCount, type ManualExtractionMethod, type ManualLocatorRange, type ManualUploadDescriptor } from "./manual-validation.js";
 
@@ -48,6 +48,17 @@ const pool = new Pool({
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
 });
+let pmRevisionSchemaPromise: Promise<boolean> | undefined;
+function pmRevisionSchemaReady(): Promise<boolean> {
+  pmRevisionSchemaPromise ??= pool.query<{ ready: boolean }>(
+    `SELECT count(*) = 2 AS ready
+       FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'pm_versions'
+        AND column_name = ANY($1::text[])`,
+    [["change_summary", "base_revision_number"]],
+  ).then((result) => Boolean(result.rows[0]?.ready));
+  return pmRevisionSchemaPromise;
+}
 const app = Fastify({ logger: true, bodyLimit: 1_048_576 });
 app.decorateRequest("principal", null);
 // Limits are evaluated once when the API process starts; unset values keep intake closed.
@@ -194,19 +205,133 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
     reviewedAt: manual.reviewed_at?.toISOString(),
   }));
 
-  const pmResult = await pool.query<{ pm_id: string; content: PmDraft | null }>(
-    `SELECT p.id AS pm_id, COALESCE(approved.content, draft.content) AS content
+  const hasPmRevisionSchema = await pmRevisionSchemaReady();
+  let pm: PmDraft | undefined;
+  let pmVersions: PmVersionHistoryEntry[] = [];
+  if (hasPmRevisionSchema) {
+  const pmResult = await pool.query<{
+    pm_id: string; draft_content: PmDraft | null; draft_base_revision_number: number | null;
+    draft_change_summary: string | null; approved_content: PmDraft | null;
+    approved_revision_number: number | null; approved_at: Date | null; approved_change_summary: string | null;
+  }>(
+    `SELECT p.id AS pm_id, draft.content AS draft_content,
+            draft.base_revision_number AS draft_base_revision_number,
+            draft.change_summary AS draft_change_summary,
+            approved.content AS approved_content,
+            approved.revision_number AS approved_revision_number,
+            approved.approved_at, approved.change_summary AS approved_change_summary
        FROM public.pms p
        JOIN public.assets a ON a.id = p.asset_id
        LEFT JOIN public.pm_versions approved ON approved.id = p.current_approved_version_id
        LEFT JOIN LATERAL (
-         SELECT content FROM public.pm_versions WHERE pm_id = p.id AND status = 'draft' LIMIT 1
+         SELECT content, base_revision_number, change_summary
+           FROM public.pm_versions WHERE pm_id = p.id AND status = 'draft' LIMIT 1
        ) draft ON true
       WHERE a.analysis_id = $1 AND p.owner_id = $2 AND p.workspace_id = $3
       ORDER BY p.updated_at DESC LIMIT 1`,
     [analysisId, owner.userId, owner.workspaceId],
   );
-  const pm = pmResult.rows[0]?.content ?? undefined;
+  const pmRecord = pmResult.rows[0];
+  if (pmRecord) {
+    const versionsResult = await pool.query<{
+      id: string; revision_number: number; content: PmDraft; change_summary: string | null; approved_at: Date;
+    }>(
+      `SELECT id, revision_number, content, change_summary, approved_at
+         FROM public.pm_versions
+        WHERE pm_id = $1 AND owner_id = $2 AND workspace_id = $3 AND status = 'confirmedApproved'
+        ORDER BY revision_number ASC`,
+      [pmRecord.pm_id, owner.userId, owner.workspaceId],
+    );
+    pmVersions = versionsResult.rows.map((version) => {
+      const approvedAt = version.approved_at.toISOString();
+      const snapshot: PmDraft = {
+        ...version.content,
+        id: version.content.id ?? pmRecord.pm_id,
+        status: "approved",
+        approvedAt,
+        revisionNumber: version.revision_number,
+        baseRevisionNumber: undefined,
+        changeSummary: version.change_summary ?? "",
+        evidenceSourceIds: version.content.evidenceSourceIds ?? [],
+      };
+      return {
+        id: version.id,
+        revisionNumber: version.revision_number,
+        approvedAt,
+        changeSummary: version.change_summary,
+        pm: snapshot,
+      };
+    });
+    if (pmRecord.draft_content) {
+      pm = {
+        ...pmRecord.draft_content,
+        id: pmRecord.draft_content.id ?? pmRecord.pm_id,
+        status: "draft",
+        baseRevisionNumber: pmRecord.draft_base_revision_number ?? undefined,
+        changeSummary: pmRecord.draft_change_summary ?? "",
+        approvedAt: undefined,
+        revisionNumber: undefined,
+        evidenceSourceIds: pmRecord.draft_content.evidenceSourceIds ?? [],
+      };
+    } else if (pmRecord.approved_content) {
+      pm = {
+        ...pmRecord.approved_content,
+        id: pmRecord.approved_content.id ?? pmRecord.pm_id,
+        status: "approved",
+        approvedAt: pmRecord.approved_at?.toISOString(),
+        revisionNumber: pmRecord.approved_revision_number ?? 0,
+        baseRevisionNumber: undefined,
+        changeSummary: pmRecord.approved_change_summary ?? "",
+        evidenceSourceIds: pmRecord.approved_content.evidenceSourceIds ?? [],
+      };
+    }
+  }
+  } else {
+    const pmResult = await pool.query<{
+      pm_id: string; approved_id: string | null; approved_content: PmDraft | null;
+      approved_at: Date | null; draft_content: PmDraft | null;
+    }>(
+      `SELECT p.id AS pm_id, approved.id AS approved_id, approved.content AS approved_content,
+              approved.approved_at, draft.content AS draft_content
+         FROM public.pms p
+         JOIN public.assets a ON a.id = p.asset_id
+         LEFT JOIN public.pm_versions approved ON approved.id = p.current_approved_version_id
+         LEFT JOIN LATERAL (
+           SELECT content FROM public.pm_versions WHERE pm_id = p.id AND status = 'draft' LIMIT 1
+         ) draft ON true
+        WHERE a.analysis_id = $1 AND p.owner_id = $2 AND p.workspace_id = $3
+        ORDER BY p.updated_at DESC LIMIT 1`,
+      [analysisId, owner.userId, owner.workspaceId],
+    );
+    const legacyRecord = pmResult.rows[0];
+    if (legacyRecord?.approved_content && legacyRecord.approved_id) {
+      const approvedAt = legacyRecord.approved_at?.toISOString() ?? new Date(0).toISOString();
+      const approvedPm: PmDraft = {
+        ...legacyRecord.approved_content,
+        id: legacyRecord.approved_content.id ?? legacyRecord.pm_id,
+        status: "approved",
+        approvedAt,
+        revisionNumber: 0,
+        baseRevisionNumber: undefined,
+        changeSummary: "",
+        evidenceSourceIds: legacyRecord.approved_content.evidenceSourceIds ?? [],
+      };
+      pmVersions = [{ id: legacyRecord.approved_id, revisionNumber: 0, approvedAt, changeSummary: null, pm: approvedPm }];
+    }
+    const currentContent = legacyRecord?.draft_content ?? legacyRecord?.approved_content;
+    if (currentContent && legacyRecord) {
+      pm = {
+        ...currentContent,
+        id: currentContent.id ?? legacyRecord.pm_id,
+        status: legacyRecord.draft_content ? "draft" : "approved",
+        approvedAt: legacyRecord.draft_content ? undefined : legacyRecord.approved_at?.toISOString(),
+        revisionNumber: legacyRecord.draft_content ? undefined : 0,
+        baseRevisionNumber: undefined,
+        changeSummary: "",
+        evidenceSourceIds: currentContent.evidenceSourceIds ?? [],
+      };
+    }
+  }
   const stageIndex = Math.max(0, workflowStages.indexOf(row.processing_stage as typeof workflowStages[number]));
   return {
     id: row.id,
@@ -222,14 +347,18 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
     manualDocuments,
     evidenceDecision: row.evidence_decision,
     assets,
-    pm: pm ? { ...pm, id: pm.id ?? pmResult.rows[0].pm_id, evidenceSourceIds: pm.evidenceSourceIds ?? [] } : undefined,
+    pm,
+    pmVersions,
     stage: stageIndex,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
 }
 
-async function loadWorkspace(owner: Principal, currentAnalysisId?: string): Promise<{ analyses: PlannerAnalysis[]; currentAnalysisId: string | null; catalog: CatalogLocation[] }> {
+async function loadWorkspace(owner: Principal, currentAnalysisId?: string): Promise<{
+  analyses: PlannerAnalysis[]; currentAnalysisId: string | null; catalog: CatalogLocation[]; pmRevisionLifecycleEnabled: boolean;
+}> {
+  const revisionLifecycleEnabled = await pmRevisionSchemaReady();
   const ids = await pool.query<{ id: string }>(
     `SELECT id FROM public.analyses
       WHERE owner_id = $1 AND workspace_id = $2
@@ -244,10 +373,10 @@ async function loadWorkspace(owner: Principal, currentAnalysisId?: string): Prom
   const selected = currentAnalysisId && analyses.some((item) => item.id === currentAnalysisId)
     ? currentAnalysisId
     : analyses[0]?.id ?? null;
-  return { analyses, currentAnalysisId: selected, catalog: await loadCatalog(owner) };
+  return { analyses, currentAnalysisId: selected, catalog: await loadCatalog(owner), pmRevisionLifecycleEnabled: revisionLifecycleEnabled };
 }
 
-function canonicalAnalysis(analysis: PlannerAnalysis) {
+function canonicalAnalysis(analysis: PlannerAnalysis, includeRevisionIntent = false) {
   const pm = analysis.pm ? {
     id: analysis.pm.id,
     title: analysis.pm.title,
@@ -261,6 +390,8 @@ function canonicalAnalysis(analysis: PlannerAnalysis) {
     finalVerification: analysis.pm.finalVerification,
     evidenceSourceIds: analysis.pm.evidenceSourceIds,
     status: analysis.pm.status,
+    changeSummary: analysis.pm.changeSummary?.trim() ?? "",
+    baseRevisionNumber: analysis.pm.status === "draft" || includeRevisionIntent ? analysis.pm.baseRevisionNumber : undefined,
   } : null;
   return {
     id: analysis.id,
@@ -294,8 +425,9 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
   }
 
   const client: PoolClient = await pool.connect();
-  const requestDigest = digest({ analysis: canonicalAnalysis(analysis), expectedRowVersion });
+  const requestDigest = digest({ analysis: canonicalAnalysis(analysis, true), expectedRowVersion });
   let expectedStored: PlannerAnalysis | null = null;
+  let expectedPmVersions: PmVersionHistoryEntry[] | undefined;
   try {
     await client.query("BEGIN");
     const priorOperation = await client.query<{ request_digest: string }>(
@@ -444,7 +576,7 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
       [analysis.id, owner.userId, owner.workspaceId, assetIds],
     );
 
-    if (analysis.pm) await persistPm(client, owner, analysis);
+    if (analysis.pm) expectedPmVersions = await persistPm(client, owner, analysis);
 
     await client.query(
       `INSERT INTO public.operation_receipts
@@ -457,7 +589,8 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
     await client.query("COMMIT");
 
     const readBack = await loadAnalysis(owner, analysis.id);
-    if (!readBack || JSON.stringify(canonicalAnalysis(readBack)) !== JSON.stringify(canonicalAnalysis(analysis))) {
+    if (!readBack || JSON.stringify(canonicalAnalysis(readBack)) !== JSON.stringify(canonicalAnalysis(analysis)) ||
+        (expectedPmVersions && !samePmHistory(expectedPmVersions, readBack.pmVersions ?? []))) {
       throw Object.assign(new Error("The database write completed, but its read-back did not match. The result is unverified."), { statusCode: 503 });
     }
     expectedStored = readBack;
@@ -471,7 +604,8 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
   return { analysis: expectedStored, workspace: await loadWorkspace(owner, expectedStored.id) };
 }
 
-async function persistPm(client: PoolClient, owner: Principal, analysis: PlannerAnalysis) {
+async function persistPm(client: PoolClient, owner: Principal, analysis: PlannerAnalysis): Promise<PmVersionHistoryEntry[]> {
+  if (!(await pmRevisionSchemaReady())) return persistPmLegacy(client, owner, analysis);
   const pm = analysis.pm as PmDraft;
   const existing = await client.query<{ current_approved_version_id: string | null }>(
     `SELECT current_approved_version_id FROM public.pms
@@ -488,6 +622,160 @@ async function persistPm(client: PoolClient, owner: Principal, analysis: Planner
   );
   if (!inserted.rowCount) throw Object.assign(new Error("This PM belongs to another workspace."), { statusCode: 409 });
 
+  const draftResult = await client.query<{
+    id: string; content: PmDraft; base_revision_number: number | null; change_summary: string | null;
+  }>(
+    `SELECT id, content, base_revision_number, change_summary
+       FROM public.pm_versions WHERE pm_id = $1 AND owner_id = $2 AND workspace_id = $3 AND status = 'draft'
+       FOR UPDATE`,
+    [pm.id, owner.userId, owner.workspaceId],
+  );
+  const draft = draftResult.rows[0];
+  const approvedResult = await client.query<{
+    id: string; revision_number: number; content: PmDraft; change_summary: string | null; approved_at: Date;
+  }>(
+    `SELECT id, revision_number, content, change_summary, approved_at
+       FROM public.pm_versions
+      WHERE pm_id = $1 AND owner_id = $2 AND workspace_id = $3 AND status = 'confirmedApproved'
+      ORDER BY revision_number ASC FOR UPDATE`,
+    [pm.id, owner.userId, owner.workspaceId],
+  );
+  const approvedRows = approvedResult.rows;
+  const approvedId = existing.rows[0]?.current_approved_version_id;
+  const current = approvedId ? approvedRows.find((version) => version.id === approvedId) : undefined;
+  if (approvedId && !current) throw Object.assign(new Error("The current approved PM version could not be verified."), { statusCode: 409 });
+  if (!approvedId && approvedRows.length) throw Object.assign(new Error("The approved PM history has no current version pointer."), { statusCode: 409 });
+
+  if (current) {
+    if (pm.status === "draft") {
+      if (pm.baseRevisionNumber !== current.revision_number) {
+        throw Object.assign(new Error("Start this PM revision from the current approved version before saving it."), { statusCode: 409 });
+      }
+      if (!draft && JSON.stringify(canonicalPm(pm)) !== JSON.stringify(canonicalPm(current.content))) {
+        throw Object.assign(new Error("A new PM revision must start from the current approved version."), { statusCode: 409 });
+      }
+      if (draft && draft.base_revision_number !== current.revision_number) {
+        throw Object.assign(new Error("The saved PM draft is based on an older approved version. Reload the analysis before continuing."), { statusCode: 409 });
+      }
+      const content = JSON.stringify(pmContentForStorage(pm, "draft"));
+      if (draft) {
+        await client.query(
+          `UPDATE public.pm_versions SET content = $2::jsonb, change_summary = $3,
+                  base_revision_number = $4, row_version = row_version + 1, updated_at = now()
+            WHERE id = $1 AND pm_id = $5 AND status = 'draft'`,
+          [draft.id, content, pm.changeSummary?.trim() ?? "", current.revision_number, pm.id],
+        );
+      } else {
+        await client.query(
+          `INSERT INTO public.pm_versions
+            (pm_id, owner_id, workspace_id, content, change_summary, base_revision_number)
+           VALUES ($1,$2,$3,$4::jsonb,$5,$6)`,
+          [pm.id, owner.userId, owner.workspaceId, content, pm.changeSummary?.trim() ?? "", current.revision_number],
+        );
+      }
+    } else if (pm.status === "approved") {
+      if (!draft) {
+        if (JSON.stringify(canonicalPm(pm)) !== JSON.stringify(canonicalPm(current.content)) ||
+            (pm.changeSummary?.trim() ?? "") !== (current.change_summary ?? "")) {
+          throw Object.assign(new Error("An approved PM is immutable. Start a new revision before changing it."), { statusCode: 409 });
+        }
+        return readPmHistory(client, owner, pm.id);
+      }
+      if (pm.baseRevisionNumber !== current.revision_number || draft.base_revision_number !== current.revision_number) {
+        throw Object.assign(new Error("The PM revision is based on an older approved version. Reload the analysis before approval."), { statusCode: 409 });
+      }
+      const summary = pm.changeSummary?.trim() ?? "";
+      if (!summary) throw Object.assign(new Error("Summarize the changes in this PM revision before approval."), { statusCode: 422 });
+      const revisionNumber = Math.max(...approvedRows.map((version) => version.revision_number)) + 1;
+      const approvedAt = new Date();
+      await client.query(
+        `UPDATE public.pm_versions
+            SET status = 'confirmedApproved', revision_number = $2, content = $3::jsonb,
+                change_summary = $4, base_revision_number = NULL, approved_by = $5, approved_at = $6,
+                row_version = row_version + 1, updated_at = now()
+          WHERE id = $1 AND pm_id = $7 AND status = 'draft'`,
+        [draft.id, revisionNumber, JSON.stringify(pmContentForStorage(pm, "approved")), summary,
+          owner.userId, approvedAt, pm.id],
+      );
+      await client.query(
+        `UPDATE public.pms SET current_approved_version_id = $1, updated_at = now()
+          WHERE id = $2 AND owner_id = $3 AND workspace_id = $4`,
+        [draft.id, pm.id, owner.userId, owner.workspaceId],
+      );
+    } else {
+      throw Object.assign(new Error("The PM status is invalid."), { statusCode: 422 });
+    }
+  } else if (pm.status === "approved") {
+    if (pm.baseRevisionNumber !== undefined) throw Object.assign(new Error("A revision cannot be approved without an existing approved version."), { statusCode: 409 });
+    let versionId: string;
+    const approvedAt = new Date();
+    if (draft) {
+      if (draft.base_revision_number !== null) throw Object.assign(new Error("The initial PM draft has an invalid base revision."), { statusCode: 409 });
+      versionId = draft.id;
+      await client.query(
+        `UPDATE public.pm_versions
+            SET status = 'confirmedApproved', revision_number = 0, content = $2::jsonb,
+                change_summary = NULL, base_revision_number = NULL,
+                approved_by = $3, approved_at = $4, row_version = row_version + 1, updated_at = now()
+          WHERE id = $1 AND pm_id = $5 AND status = 'draft'`,
+        [versionId, JSON.stringify(pmContentForStorage(pm, "approved")), owner.userId, approvedAt, pm.id],
+      );
+    } else {
+      versionId = randomUUID();
+      await client.query(
+        `INSERT INTO public.pm_versions
+          (id, pm_id, owner_id, workspace_id, status, revision_number, content, approved_by, approved_at)
+         VALUES ($1,$2,$3,$4,'confirmedApproved',0,$5::jsonb,$6,$7)`,
+        [versionId, pm.id, owner.userId, owner.workspaceId, JSON.stringify(pmContentForStorage(pm, "approved")), owner.userId, approvedAt],
+      );
+    }
+    await client.query(
+      `UPDATE public.pms SET current_approved_version_id = $1, updated_at = now()
+        WHERE id = $2 AND owner_id = $3 AND workspace_id = $4`,
+      [versionId, pm.id, owner.userId, owner.workspaceId],
+    );
+  } else {
+    if (pm.baseRevisionNumber !== undefined) throw Object.assign(new Error("A PM revision cannot be saved without an approved version."), { statusCode: 409 });
+    if (draft) {
+      await client.query(
+        `UPDATE public.pm_versions SET content = $2::jsonb, change_summary = NULL, base_revision_number = NULL,
+                row_version = row_version + 1, updated_at = now()
+          WHERE id = $1 AND pm_id = $3 AND owner_id = $4 AND workspace_id = $5 AND status = 'draft'`,
+        [draft.id, JSON.stringify(pmContentForStorage(pm, "draft")), pm.id, owner.userId, owner.workspaceId],
+      );
+    } else {
+      await client.query(
+        `INSERT INTO public.pm_versions (pm_id, owner_id, workspace_id, content)
+         VALUES ($1,$2,$3,$4::jsonb)`,
+        [pm.id, owner.userId, owner.workspaceId, JSON.stringify(pmContentForStorage(pm, "draft"))],
+      );
+    }
+  }
+  return readPmHistory(client, owner, pm.id);
+}
+
+async function persistPmLegacy(client: PoolClient, owner: Principal, analysis: PlannerAnalysis): Promise<PmVersionHistoryEntry[]> {
+  const pm = analysis.pm as PmDraft;
+  if (pm.baseRevisionNumber !== undefined) {
+    throw Object.assign(new Error("PM revision history requires the pending database migration. The saved approved version was not changed."), { statusCode: 503 });
+  }
+  if (pm.changeSummary?.trim()) {
+    throw Object.assign(new Error("PM change summaries require the pending database migration. The saved approved version was not changed."), { statusCode: 503 });
+  }
+  const existing = await client.query<{ current_approved_version_id: string | null }>(
+    `SELECT current_approved_version_id FROM public.pms
+      WHERE id = $1 AND owner_id = $2 AND workspace_id = $3 FOR UPDATE`,
+    [pm.id, owner.userId, owner.workspaceId],
+  );
+  const inserted = await client.query(
+    `INSERT INTO public.pms (id, asset_id, owner_id, workspace_id)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (id) DO UPDATE SET asset_id = EXCLUDED.asset_id, updated_at = now()
+     WHERE public.pms.owner_id = EXCLUDED.owner_id AND public.pms.workspace_id = EXCLUDED.workspace_id
+     RETURNING id`,
+    [pm.id, pm.assetId, owner.userId, owner.workspaceId],
+  );
+  if (!inserted.rowCount) throw Object.assign(new Error("This PM belongs to another workspace."), { statusCode: 409 });
   const draft = await client.query<{ id: string }>(
     `SELECT id FROM public.pm_versions WHERE pm_id = $1 AND status = 'draft' FOR UPDATE`, [pm.id],
   );
@@ -498,14 +786,12 @@ async function persistPm(client: PoolClient, owner: Principal, analysis: Planner
     );
     if (pm.status !== "approved" || !approved.rows[0] ||
         JSON.stringify(canonicalPm(approved.rows[0].content)) !== JSON.stringify(canonicalPm(pm))) {
-      throw Object.assign(new Error("An approved PM version is immutable. Start a new revision in a later PlannerMC flow."), { statusCode: 409 });
+      throw Object.assign(new Error("An approved PM version is immutable. Apply the PM revision migration before starting a later revision."), { statusCode: 409 });
     }
-    return;
+    return readPmHistoryLegacy(client, owner, pm.id);
   }
-
   if (pm.status === "approved") {
-    const approvedAt = new Date().toISOString();
-    const content = { ...pm, status: "approved" as const, approvedAt };
+    const approvedAt = new Date();
     let versionId: string;
     if (draft.rows[0]) {
       versionId = draft.rows[0].id;
@@ -514,7 +800,7 @@ async function persistPm(client: PoolClient, owner: Principal, analysis: Planner
             SET status = 'confirmedApproved', revision_number = 0, content = $2::jsonb,
                 approved_by = $3, approved_at = $4, row_version = row_version + 1, updated_at = now()
           WHERE id = $1 AND pm_id = $5 AND status = 'draft'`,
-        [versionId, JSON.stringify(content), owner.userId, approvedAt, pm.id],
+        [versionId, JSON.stringify(pmContentForStorage(pm, "approved")), owner.userId, approvedAt, pm.id],
       );
     } else {
       versionId = randomUUID();
@@ -522,34 +808,118 @@ async function persistPm(client: PoolClient, owner: Principal, analysis: Planner
         `INSERT INTO public.pm_versions
           (id, pm_id, owner_id, workspace_id, status, revision_number, content, approved_by, approved_at)
          VALUES ($1,$2,$3,$4,'confirmedApproved',0,$5::jsonb,$6,$7)`,
-        [versionId, pm.id, owner.userId, owner.workspaceId, JSON.stringify(content), owner.userId, approvedAt],
+        [versionId, pm.id, owner.userId, owner.workspaceId, JSON.stringify(pmContentForStorage(pm, "approved")), owner.userId, approvedAt],
       );
     }
     await client.query(
-      "UPDATE public.pms SET current_approved_version_id = $1, updated_at = now() WHERE id = $2 AND owner_id = $3 AND workspace_id = $4",
+      `UPDATE public.pms SET current_approved_version_id = $1, updated_at = now()
+        WHERE id = $2 AND owner_id = $3 AND workspace_id = $4`,
       [versionId, pm.id, owner.userId, owner.workspaceId],
     );
-    return;
-  }
-
-  if (draft.rows[0]) {
+  } else if (draft.rows[0]) {
     await client.query(
       `UPDATE public.pm_versions SET content = $2::jsonb, row_version = row_version + 1, updated_at = now()
         WHERE id = $1 AND pm_id = $3 AND owner_id = $4 AND workspace_id = $5 AND status = 'draft'`,
-      [draft.rows[0].id, JSON.stringify({ ...pm, approvedAt: undefined }), pm.id, owner.userId, owner.workspaceId],
+      [draft.rows[0].id, JSON.stringify(pmContentForStorage(pm, "draft")), pm.id, owner.userId, owner.workspaceId],
     );
   } else {
     await client.query(
       `INSERT INTO public.pm_versions (pm_id, owner_id, workspace_id, content)
        VALUES ($1,$2,$3,$4::jsonb)`,
-      [pm.id, owner.userId, owner.workspaceId, JSON.stringify({ ...pm, approvedAt: undefined })],
+      [pm.id, owner.userId, owner.workspaceId, JSON.stringify(pmContentForStorage(pm, "draft"))],
     );
   }
+  return readPmHistoryLegacy(client, owner, pm.id);
+}
+
+async function readPmHistoryLegacy(client: PoolClient, owner: Principal, pmId: string): Promise<PmVersionHistoryEntry[]> {
+  const result = await client.query<{
+    id: string; revision_number: number; content: PmDraft; approved_at: Date;
+  }>(
+    `SELECT version.id, version.revision_number, version.content, version.approved_at
+       FROM public.pms pm
+       JOIN public.pm_versions version ON version.id = pm.current_approved_version_id
+      WHERE pm.id = $1 AND pm.owner_id = $2 AND pm.workspace_id = $3
+        AND version.status = 'confirmedApproved'`,
+    [pmId, owner.userId, owner.workspaceId],
+  );
+  return result.rows.map((version) => {
+    const approvedAt = version.approved_at.toISOString();
+    const snapshot: PmDraft = {
+      ...version.content,
+      id: version.content.id ?? pmId,
+      status: "approved",
+      approvedAt,
+      revisionNumber: version.revision_number,
+      baseRevisionNumber: undefined,
+      changeSummary: "",
+      evidenceSourceIds: version.content.evidenceSourceIds ?? [],
+    };
+    return { id: version.id, revisionNumber: version.revision_number, approvedAt, changeSummary: null, pm: snapshot };
+  });
+}
+
+function pmContentForStorage(pm: PmDraft, status: PmDraft["status"]): PmDraft {
+  return {
+    ...pm,
+    status,
+    approvedAt: undefined,
+    revisionNumber: undefined,
+    baseRevisionNumber: undefined,
+    changeSummary: undefined,
+  };
+}
+
+async function readPmHistory(client: PoolClient, owner: Principal, pmId: string): Promise<PmVersionHistoryEntry[]> {
+  const result = await client.query<{
+    id: string; revision_number: number; content: PmDraft; change_summary: string | null; approved_at: Date;
+  }>(
+    `SELECT id, revision_number, content, change_summary, approved_at
+       FROM public.pm_versions
+      WHERE pm_id = $1 AND owner_id = $2 AND workspace_id = $3 AND status = 'confirmedApproved'
+      ORDER BY revision_number ASC`,
+    [pmId, owner.userId, owner.workspaceId],
+  );
+  return result.rows.map((version) => {
+    const approvedAt = version.approved_at.toISOString();
+    return {
+      id: version.id,
+      revisionNumber: version.revision_number,
+      approvedAt,
+      changeSummary: version.change_summary,
+      pm: {
+        ...version.content,
+        id: version.content.id ?? pmId,
+        status: "approved",
+        approvedAt,
+        revisionNumber: version.revision_number,
+        baseRevisionNumber: undefined,
+        changeSummary: version.change_summary ?? "",
+        evidenceSourceIds: version.content.evidenceSourceIds ?? [],
+      },
+    };
+  });
 }
 
 function canonicalPm(pm: PmDraft) {
-  const { approvedAt: _approvedAt, ...rest } = pm;
-  return { ...rest, evidenceSourceIds: pm.evidenceSourceIds ?? [] };
+  const {
+    status: _status,
+    approvedAt: _approvedAt,
+    revisionNumber: _revisionNumber,
+    baseRevisionNumber: _baseRevisionNumber,
+    changeSummary: _changeSummary,
+    ...content
+  } = pm;
+  return { ...content, evidenceSourceIds: pm.evidenceSourceIds ?? [] };
+}
+
+function samePmHistory(expected: PmVersionHistoryEntry[], actual: PmVersionHistoryEntry[]): boolean {
+  return expected.length === actual.length && expected.every((version, index) => {
+    const readBack = actual[index];
+    return Boolean(readBack && readBack.id === version.id && readBack.revisionNumber === version.revisionNumber &&
+      readBack.approvedAt === version.approvedAt && readBack.changeSummary === version.changeSummary &&
+      JSON.stringify(canonicalPm(readBack.pm)) === JSON.stringify(canonicalPm(version.pm)));
+  });
 }
 
 type ManualDatabaseRecord = {

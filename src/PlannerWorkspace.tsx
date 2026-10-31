@@ -394,6 +394,26 @@ function PlannerWorkspace() {
     if (saved) setPm(saved.pm ?? pm);
   }
 
+  async function startPmRevision() {
+    if (!analysis || !pm || pm.status !== "approved" || (backendMode && snapshot.pmRevisionLifecycleEnabled !== true)) return;
+    const latestRevision = analysis.pmVersions?.at(-1)?.revisionNumber;
+    const baseRevisionNumber = pm.revisionNumber ?? latestRevision ?? 0;
+    const draft: PmDraft = {
+      ...pm,
+      status: "draft",
+      approvedAt: undefined,
+      revisionNumber: undefined,
+      baseRevisionNumber,
+      changeSummary: "",
+    };
+    const saved = await saveRecord({ ...analysis, pm: draft, stage: 3 }, "PM revision draft started and read back.");
+    if (saved?.pm) {
+      setPm(saved.pm);
+      setReviewed(false);
+      setApprovalIssues([]);
+    }
+  }
+
   async function approvePm() {
     if (!analysis || !pm) return;
     const issues = pmApprovalIssues(pm, confirmedAssets);
@@ -429,6 +449,7 @@ function PlannerWorkspace() {
 
   function changeStep(target: number) {
     if (!analysis || target > analysis.stage || target < 0) return;
+    if ((analysis.pmVersions?.length ?? 0) > 0 && target !== 3) return;
     setError("");
     setStep(target);
     if (target === 3) setPm(analysis.pm ?? createEmptyPm(analysis));
@@ -545,7 +566,8 @@ function PlannerWorkspace() {
             <>
               <div className="mb-6 grid grid-cols-2 gap-2 lg:grid-cols-4">
                 {flowSteps.map(({ label, caption, icon: Icon }, index) => {
-                  const available = index <= analysis.stage;
+                  const hasApprovedHistory = (analysis.pmVersions?.length ?? 0) > 0;
+                  const available = index <= analysis.stage && (!hasApprovedHistory || index === 3);
                   const current = index === step;
                   const complete = index < analysis.stage || (index === 3 && analysis.pm?.status === "approved");
                   return (
@@ -562,7 +584,7 @@ function PlannerWorkspace() {
               {step === 0 && <IntakeStep analysis={analysis} catalog={snapshot.catalog} readOnly={analysis.stage >= 2} onChange={updateAnalysis} onSubmit={saveIntake} />}
               {step === 1 && <EvidenceStep analysis={analysis} catalog={snapshot.catalog} manualConfig={manualIntakeConfig} readOnly={analysis.stage >= 2 && Boolean(analysis.plannerEvidence?.reviewedAt)} acknowledged={continueWithLimitations} onAcknowledge={setContinueWithLimitations} onUpdateSource={updatePlannerEvidence} onUploadManual={uploadManual} onReviewManual={reviewManual} onReopenManual={reopenManual} onBack={() => changeStep(0)} onContinue={continueFromEvidence} />}
               {step === 2 && <AssetsStep analysis={analysis} readOnly={analysis.pm?.status === "approved"} onUpdate={updateAsset} onAdd={addSubasset} onRemove={removeAsset} parentAcknowledged={parentAcknowledged} onParentAcknowledged={setParentAcknowledged} onBack={() => changeStep(1)} onContinue={continueFromAssets} />}
-              {step === 3 && pm && <PmStep analysis={analysis} pm={pm} setPm={setPm} assets={confirmedAssets} reviewed={reviewed} onReviewed={setReviewed} issues={approvalIssues} catalog={snapshot.catalog} onBack={() => changeStep(2)} onSave={savePmDraft} onApprove={approvePm} onCopy={copyPm} onCopyStep={copyStep} />}
+              {step === 3 && pm && <PmStep analysis={analysis} pm={pm} setPm={setPm} assets={confirmedAssets} reviewed={reviewed} onReviewed={setReviewed} issues={approvalIssues} catalog={snapshot.catalog} revisionLifecycleEnabled={!backendMode || snapshot.pmRevisionLifecycleEnabled === true} onBack={() => changeStep(2)} onSave={savePmDraft} onApprove={approvePm} onStartRevision={startPmRevision} onCopy={copyPm} onCopyStep={copyStep} />}
             </>
           )}
           </fieldset>
@@ -1059,7 +1081,7 @@ function AssetRow({ asset, root = false, index, readOnly, onUpdate, onRemove }: 
   );
 }
 
-function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, catalog, onBack, onSave, onApprove, onCopy, onCopyStep }: {
+function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, catalog, revisionLifecycleEnabled, onBack, onSave, onApprove, onStartRevision, onCopy, onCopyStep }: {
   analysis: PlannerAnalysis;
   pm: PmDraft;
   setPm: (pm: PmDraft) => void;
@@ -1068,9 +1090,11 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
   onReviewed: (checked: boolean) => void;
   issues: string[];
   catalog: CatalogLocation[];
+  revisionLifecycleEnabled: boolean;
   onBack: () => void;
   onSave: () => void;
   onApprove: () => void;
+  onStartRevision: () => void;
   onCopy: () => void;
   onCopyStep: (label: string, text: string) => void;
 }) {
@@ -1095,7 +1119,31 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
         </span>
       </div>
 
-      {isApproved && <div className="mb-5 flex items-start gap-3 rounded-card border border-success/40 bg-success/5 p-4 text-sm leading-6 text-muted"><FileCheck2 size={17} className="mt-0.5 shrink-0 text-success" aria-hidden="true" /><p>This saved version was approved {backendMode ? "in this workspace" : "in this browser"} on {pm.approvedAt ? new Date(pm.approvedAt).toLocaleString() : "an earlier session"}. It has not been sent to a CMMS.</p></div>}
+      {isApproved && <div className="mb-5 flex items-start gap-3 rounded-card border border-success/40 bg-success/5 p-4 text-sm leading-6 text-muted"><FileCheck2 size={17} className="mt-0.5 shrink-0 text-success" aria-hidden="true" /><p>This saved version was approved {backendMode ? "in this workspace" : "in this browser"} on {pm.approvedAt ? new Date(pm.approvedAt).toLocaleString() : "an earlier session"}. {pm.revisionNumber === 0 || pm.revisionNumber === undefined ? "It is the initial approved version." : `It is revision ${pm.revisionNumber}.`} It has not been sent to a CMMS.</p></div>}
+      {isApproved && !revisionLifecycleEnabled && <p role="status" className="mb-5 rounded-control border border-warning/40 bg-warning/5 p-3 text-sm leading-5 text-muted">PM revision history is waiting for the database migration. This approved version remains available to copy.</p>}
+
+      {pm.baseRevisionNumber !== undefined && <div className="mb-5 rounded-card border border-accent/40 bg-accent/5 p-4">
+        <Field label="Revision summary" htmlFor="pm-change-summary" hint="Describe what changed from the currently approved version. Required before approval.">
+          <textarea id="pm-change-summary" required maxLength={2000} rows={3} className={textAreaClass} value={pm.changeSummary ?? ""} onChange={(event) => change("changeSummary", event.target.value)} placeholder="Summarize the PM changes for the revision history" />
+        </Field>
+      </div>}
+
+      {(analysis.pmVersions?.length ?? 0) > 0 && <section aria-label="Approved revision history" className="mb-6 rounded-card border border-border bg-panel-muted p-4">
+        <h3 className="text-sm font-semibold">Approved revision history</h3>
+        <ol className="mt-3 space-y-3">
+          {[...(analysis.pmVersions ?? [])].sort((a, b) => b.revisionNumber - a.revisionNumber).map((version) => <li key={version.id} className="rounded-control border border-border bg-panel p-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <p className="text-sm font-medium">{version.revisionNumber === 0 ? "Initial approved version" : `Revision ${version.revisionNumber}`}</p>
+              <time className="text-xs text-muted" dateTime={version.approvedAt}>{new Date(version.approvedAt).toLocaleString()}</time>
+            </div>
+            {version.changeSummary && <p className="mt-2 whitespace-pre-wrap text-sm leading-5 text-muted">{version.changeSummary}</p>}
+            <details className="mt-2 text-xs">
+              <summary className="cursor-pointer text-accent">View approved snapshot</summary>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-panel-muted p-3 font-sans leading-5 text-foreground">{renderPmText(analysis, version.pm, catalog)}</pre>
+            </details>
+          </li>)}
+        </ol>
+      </section>}
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">
         <div className="space-y-5 xl:col-span-3">
@@ -1173,7 +1221,7 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
 
           {!isApproved && <label className="flex cursor-pointer items-start gap-3 rounded-card border border-border-input bg-panel-muted p-4 text-sm leading-6"><input type="checkbox" checked={reviewed} onChange={(event) => onReviewed(event.target.checked)} className="mt-1 h-4 w-4 accent-accent" /><span>I reviewed this planner-authored PM, including the asset, frequency, duration, operating state, safety details, task steps, and any unresolved limitations.</span></label>}
           {issues.length > 0 && <div role="alert" className="rounded-card border border-warning/40 bg-warning/5 p-4"><p className="text-sm font-semibold text-warning">Approval needs attention</p><ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted">{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul></div>}
-          {isApproved && pm.approvedAt && <p className="text-xs text-muted">Approved on {new Date(pm.approvedAt).toLocaleDateString()} · Initial approved version</p>}
+          {isApproved && pm.approvedAt && <p className="text-xs text-muted">Approved on {new Date(pm.approvedAt).toLocaleDateString()} · {pm.revisionNumber === 0 || pm.revisionNumber === undefined ? "Initial approved version" : `Revision ${pm.revisionNumber}`}</p>}
         </div>
 
         <aside className="space-y-4 xl:col-span-2">
@@ -1193,11 +1241,12 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
       </div>
 
       <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-border pt-5">
-        <ActionButton type="button" onClick={onBack} disabled={isApproved}><ArrowLeft size={15} aria-hidden="true" />Back to assets</ActionButton>
+        <ActionButton type="button" onClick={onBack} disabled={isApproved || (analysis.pmVersions?.length ?? 0) > 0}><ArrowLeft size={15} aria-hidden="true" />Back to assets</ActionButton>
         <div className="flex flex-wrap gap-2">
           {!isApproved && <ActionButton type="button" onClick={onSave}><Save size={15} aria-hidden="true" />Save draft</ActionButton>}
           {!isApproved && <ActionButton type="button" variant="primary" onClick={onApprove}><CheckCircle2 size={15} aria-hidden="true" />Approve PM</ActionButton>}
           {isApproved && <ActionButton type="button" onClick={onCopy}><ClipboardCheck size={15} aria-hidden="true" />Copy approved PM</ActionButton>}
+          {isApproved && <ActionButton type="button" variant="primary" disabled={!revisionLifecycleEnabled} onClick={onStartRevision}><Plus size={15} aria-hidden="true" />Start new revision</ActionButton>}
         </div>
       </div>
     </section>

@@ -91,6 +91,17 @@ export type PmDraft = {
   status: "draft" | "approved";
   createdAt: string;
   approvedAt?: string;
+  revisionNumber?: number;
+  baseRevisionNumber?: number;
+  changeSummary?: string;
+};
+
+export type PmVersionHistoryEntry = {
+  id: string;
+  revisionNumber: number;
+  approvedAt: string;
+  changeSummary: string | null;
+  pm: PmDraft;
 };
 
 export type PlannerAnalysis = {
@@ -108,6 +119,7 @@ export type PlannerAnalysis = {
   evidenceDecision: "not_decided" | "continue_with_limitations";
   assets: AssetProposal[];
   pm?: PmDraft;
+  pmVersions?: PmVersionHistoryEntry[];
   stage: number;
   createdAt: string;
   updatedAt: string;
@@ -198,6 +210,7 @@ export function createEmptyPm(analysis: PlannerAnalysis): PmDraft {
     ],
     status: "draft",
     createdAt: new Date().toISOString(),
+    changeSummary: "",
   };
 }
 
@@ -228,6 +241,9 @@ export function pmApprovalIssues(pm: PmDraft, confirmedAssets: AssetProposal[]):
   const hasUnresolvedSafety = pm.operatingState === "undetermined" || !pm.safetyPrecautions.trim();
   if (hasUnresolvedSafety && !pm.unresolvedSafetyAcknowledged) {
     issues.push("Acknowledge the unresolved operating-state or safety information before approval.");
+  }
+  if (pm.baseRevisionNumber !== undefined && !pm.changeSummary?.trim()) {
+    issues.push("Summarize the changes in this PM revision before approval.");
   }
   return issues;
 }
