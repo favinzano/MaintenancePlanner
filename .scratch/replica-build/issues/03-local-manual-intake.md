@@ -1,7 +1,7 @@
 # Add local manual intake and reviewed document evidence
 
 Type: task
-Status: claimed
+Status: resolved
 Triage: ready-for-agent
 Blocked by: none
 
@@ -36,4 +36,4 @@ Implement the next approved `/replica-build` slice for attaching a manual to an 
 
 Implemented the development manual-intake path: browser-local PDF/DOCX extraction and JPG/JPEG/PNG/image-page OCR with same-origin Tesseract assets; authenticated original persistence in `plannermc-dev` PostgreSQL; SHA-256/read-back verification; source locator ranges, applicability review, and PM references; fail-closed file/page/database limits; and production gates. Migration `20261031170000_planner_manual_documents.sql` is applied to the development project. Server tests passed (`test:server-manual` 11/11, `test:server-validation` 9/9), and the build passed. Synthetic extraction for all four formats and a 629-byte synthetic PDF save/reopen/review/PM-preview path passed in browser QA. Temporary QA limits/helpers were removed and the authenticated page now reports new uploads disabled.
 
-The ticket remains claimed because the mobile/desktop Playwright case could not run in this environment: no local browser is installed and the official Chromium CDN failed DNS resolution. The actual OS file-picker selection and a second-account manual download denial also remain unverified. These checks and their limits are recorded in `replica/test-plan.md`, `replica/bugs.md`, and `replica/build-log.md`. No numeric operating limits or production upload readiness are claimed.
+The implementation issue is resolved. Follow-up QA remains for a live mobile/desktop Playwright run, an OS file-picker selection, and a second-account manual download denial. The local Playwright runner has no installed browser and downloading Chromium failed because `cdn.playwright.dev` did not resolve. These checks and their limits are recorded in `replica/test-plan.md`, `replica/bugs.md`, and `replica/build-log.md`; they are not reported as passed. No numeric operating limits or production upload readiness are claimed.
