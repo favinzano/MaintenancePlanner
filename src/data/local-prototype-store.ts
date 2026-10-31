@@ -31,12 +31,13 @@ function pmContent(pm: PmDraft) {
     taskSteps: pm.taskSteps,
     finalVerification: pm.finalVerification,
     evidenceSourceIds: pm.evidenceSourceIds ?? [],
+    fieldEvidence: pm.fieldEvidence ?? {},
     createdAt: pm.createdAt,
   };
 }
 
 function normalizePm(pm: PmDraft): PmDraft {
-  return { ...pm, id: pm.id ?? createId(), evidenceSourceIds: pm.evidenceSourceIds ?? [], changeSummary: pm.changeSummary ?? "" };
+  return { ...pm, id: pm.id ?? createId(), evidenceSourceIds: pm.evidenceSourceIds ?? [], fieldEvidence: pm.fieldEvidence ?? {}, changeSummary: pm.changeSummary ?? "" };
 }
 
 function normalizePmHistory(pm: PmDraft | undefined, value: PmVersionHistoryEntry[] | undefined, updatedAt: string): PmVersionHistoryEntry[] {

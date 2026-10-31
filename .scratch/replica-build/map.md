@@ -34,6 +34,8 @@ Date: 2026-10-31.
 - The `/replica-diff` assessment is in [`replica/parity.md`](../../replica/parity.md). It previously scored 61.1/100 after issue 04; implementing issue 05 raised the PlannerMC-only score to 66.7/100. Neither score is vendor-app parity, and no comparable original workflow screenshots or walkthrough are available.
 - Issue [04-pm-revision-lifecycle](issues/04-pm-revision-lifecycle.md) is resolved. The additive migration was applied to `plannermc-dev` only; hosted lifecycle QA and a focused local Playwright test passed. Evidence and retained synthetic QA data are documented in `replica/test-plan.md` and `replica/build-log.md`.
 - Issue [05-pm-split-proposal](issues/05-pm-split-proposal.md) is resolved. The planner can author overflow actions, choose a boundary, review two PMs under the 15-step cap, and confirm or cancel. Both drafts persist independently and were verified in local E2E and authenticated `plannermc-dev` QA. Production and CMMS were not touched.
+- User approved the next bounded `/replica-build` slice: citations on frequency, duration, operating state, safety, task steps, and final verification, using reviewed applicable sources from the same analysis. Implementation is tracked in [06-field-level-pm-evidence-citations](issues/06-field-level-pm-evidence-citations.md); do not infer support or source locators.
+- Issue [06-field-level-pm-evidence-citations](issues/06-field-level-pm-evidence-citations.md) is resolved. Local automated tests and authenticated synthetic `plannermc-dev` QA verified citation authoring, persistence/read-back, step remapping, approval, and retained snapshots. A JSONB key-order false negative in the server comparator was corrected and regression-tested. One explicitly labeled QA analysis remains in development; production and CMMS were untouched.
 - Updated [`replica/parity.md`](../../replica/parity.md) to 66.7/100 against the PlannerMC MVP must-haves. This is not vendor-product parity.
 - Ran the local `replica-diff` parity script against the PlannerMC-only matrix at `replica/diffs/plannermc-scope.csv`. Four of nine must-haves are complete; five remain incomplete. No original workflow captures exist for layout or behavior comparison.
 
@@ -45,4 +47,4 @@ Date: 2026-10-31.
 
 ## Next flow step
 
-Issues 04 and 05 are resolved, and the `/replica-diff` report has been refreshed. [Inference] The next candidate is a bounded `/replica-build` slice for field-level PM evidence citations using already reviewed planner/manual sources. The user has not yet approved that implementation scope. Other remaining gaps and dependencies are ranked in `replica/parity.md`.
+Issue 06 is resolved. The next workflow step is `/replica-diff` to refresh the gap ranking; the remaining build candidates depend on an operational catalog source or deferred language/provider policy decisions.

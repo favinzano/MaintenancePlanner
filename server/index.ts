@@ -6,7 +6,8 @@ import { readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
 import { getDocument as getPdfDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AdditionalPmPlan, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../src/domain/planner.js";
-import { assertReviewedManualReferences, parseSaveBody, type SaveBody } from "./save-validation.js";
+import { canonicalFieldEvidence } from "./pm-canonical.js";
+import { assertApplicableManualCitations, assertReviewedManualReferences, parseSaveBody, type SaveBody } from "./save-validation.js";
 import { MANUAL_CONTENT_TYPES, parseManualUploadDescriptor, readManualUploadConfig, verifyPdfPageCount, type ManualExtractionMethod, type ManualLocatorRange, type ManualUploadDescriptor } from "./manual-validation.js";
 
 type Principal = { userId: string; workspaceId: string };
@@ -251,6 +252,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         baseRevisionNumber: undefined,
         changeSummary: version.change_summary ?? "",
         evidenceSourceIds: version.content.evidenceSourceIds ?? [],
+        fieldEvidence: version.content.fieldEvidence ?? {},
       };
       return {
         id: version.id,
@@ -271,6 +273,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         approvedAt: undefined,
         revisionNumber: undefined,
         evidenceSourceIds: pmRecord.draft_content.evidenceSourceIds ?? [],
+        fieldEvidence: pmRecord.draft_content.fieldEvidence ?? {},
       };
     } else if (pmRecord.approved_content) {
       pm = {
@@ -282,6 +285,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         baseRevisionNumber: undefined,
         changeSummary: pmRecord.approved_change_summary ?? "",
         evidenceSourceIds: pmRecord.approved_content.evidenceSourceIds ?? [],
+        fieldEvidence: pmRecord.approved_content.fieldEvidence ?? {},
       };
     }
     if (pm) pmPlans.push({ pm, pmVersions });
@@ -316,6 +320,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         baseRevisionNumber: undefined,
         changeSummary: "",
         evidenceSourceIds: legacyRecord.approved_content.evidenceSourceIds ?? [],
+        fieldEvidence: legacyRecord.approved_content.fieldEvidence ?? {},
       };
       pmVersions = [{ id: legacyRecord.approved_id, revisionNumber: 0, approvedAt, changeSummary: null, pm: approvedPm }];
     }
@@ -331,6 +336,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         baseRevisionNumber: undefined,
         changeSummary: "",
         evidenceSourceIds: currentContent.evidenceSourceIds ?? [],
+        fieldEvidence: currentContent.fieldEvidence ?? {},
       };
     }
     if (pm) pmPlans.push({ pm, pmVersions });
@@ -395,6 +401,7 @@ function canonicalAnalysis(analysis: PlannerAnalysis, includeRevisionIntent = fa
     taskSteps: candidate.taskSteps,
     finalVerification: candidate.finalVerification,
     evidenceSourceIds: candidate.evidenceSourceIds,
+    fieldEvidence: canonicalFieldEvidence(candidate.fieldEvidence),
     status: candidate.status,
     changeSummary: candidate.changeSummary?.trim() ?? "",
     baseRevisionNumber: candidate.status === "draft" || includeRevisionIntent ? candidate.baseRevisionNumber : undefined,
@@ -547,6 +554,22 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
         [manualReferenceIds, analysis.id, owner.userId, owner.workspaceId],
       );
       assertReviewedManualReferences(manualReferenceIds, referenced.rows.map((row) => row.id));
+    }
+
+    const manualCitationIds = [...new Set(requestedPms.flatMap((pm) => Object.values(pm.fieldEvidence ?? {}).flatMap((citations) => citations.map((citation) => citation.sourceId)))
+      .filter((id) => id !== analysis.plannerEvidence?.id))];
+    if (manualCitationIds.length) {
+      const applicable = await client.query<{ id: string }>(
+        `SELECT s.id
+           FROM public.sources s
+           JOIN public.original_documents d ON d.source_id = s.id
+          WHERE s.id = ANY($1::uuid[]) AND s.analysis_id = $2
+            AND s.owner_id = $3 AND s.workspace_id = $4
+            AND s.kind = 'manual' AND s.reviewed_at IS NOT NULL
+            AND s.applicability = 'applicable'`,
+        [manualCitationIds, analysis.id, owner.userId, owner.workspaceId],
+      );
+      assertApplicableManualCitations(manualCitationIds, applicable.rows.map((row) => row.id));
     }
 
     const equipment = analysis.assets.find((asset) => asset.kind === "equipment");
@@ -876,6 +899,7 @@ async function readPmHistoryLegacy(client: PoolClient, owner: Principal, pmId: s
       baseRevisionNumber: undefined,
       changeSummary: "",
       evidenceSourceIds: version.content.evidenceSourceIds ?? [],
+        fieldEvidence: version.content.fieldEvidence ?? {},
     };
     return { id: version.id, revisionNumber: version.revision_number, approvedAt, changeSummary: null, pm: snapshot };
   });
@@ -918,6 +942,7 @@ async function readPmHistory(client: PoolClient, owner: Principal, pmId: string)
         baseRevisionNumber: undefined,
         changeSummary: version.change_summary ?? "",
         evidenceSourceIds: version.content.evidenceSourceIds ?? [],
+        fieldEvidence: version.content.fieldEvidence ?? {},
       },
     };
   });
@@ -932,7 +957,7 @@ function canonicalPm(pm: PmDraft) {
     changeSummary: _changeSummary,
     ...content
   } = pm;
-  return { ...content, evidenceSourceIds: pm.evidenceSourceIds ?? [] };
+  return { ...content, evidenceSourceIds: pm.evidenceSourceIds ?? [], fieldEvidence: canonicalFieldEvidence(pm.fieldEvidence) };
 }
 
 function samePmHistory(expected: PmVersionHistoryEntry[], actual: PmVersionHistoryEntry[]): boolean {

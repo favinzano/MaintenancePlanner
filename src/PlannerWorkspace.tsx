@@ -33,6 +33,7 @@ import {
   createPlannerEvidence,
   MAX_PM_STEPS,
   openingPmStep,
+  removePmTaskStepEvidence,
   pmApprovalIssues,
   previewPmSplit,
   PLANNER_EVIDENCE_BASE_LIMITATION,
@@ -50,6 +51,7 @@ import {
   type PlannerAnalysis,
   type PlannerEvidence,
   type PmDraft,
+  type PmFieldEvidenceCitation,
 } from "./domain/planner";
 import { plannerStore, type WorkspaceSnapshot } from "./data/local-prototype-store";
 import { httpPlannerStore } from "./data/http-planner-store";
@@ -102,6 +104,56 @@ function Field({ label, htmlFor, hint, children }: PropsWithChildren<{ label: st
       {children}
       {hint && <p className="mt-1.5 text-xs leading-5 text-muted">{hint}</p>}
     </div>
+  );
+}
+
+function FieldEvidenceEditor({ fieldKey, label, citations, sources, disabled, onChange }: {
+  fieldKey: string;
+  label: string;
+  citations: PmFieldEvidenceCitation[];
+  sources: Array<PlannerEvidence | ManualEvidence>;
+  disabled: boolean;
+  onChange: (citations: PmFieldEvidenceCitation[]) => void;
+}) {
+  const idBase = `field-evidence-${fieldKey.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+  const sourceName = (source: PlannerEvidence | ManualEvidence) => source.title.trim() || (source.kind === "manual" ? source.fileName : "Planner-provided information");
+  return (
+    <section aria-label={`Evidence for ${label}`} className="mt-2 rounded-control border border-border bg-panel p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold">Field evidence · {label}</p>
+        {!disabled && <ActionButton type="button" disabled={sources.length <= citations.length} onClick={() => {
+          const nextSource = sources.find((source) => !citations.some((citation) => citation.sourceId === source.id));
+          if (nextSource) onChange([...citations, { sourceId: nextSource.id, locator: "" }]);
+        }} className="min-h-8 px-2.5 text-xs"><Plus size={13} aria-hidden="true" />Add citation</ActionButton>}
+      </div>
+      {citations.length === 0 && <p className="mt-1 text-xs leading-5 text-muted">No field citation attached. Only a reviewed source marked applicable can be selected.</p>}
+      {citations.map((citation, index) => {
+        const selectId = `${idBase}-${index}-source`;
+        const locatorId = `${idBase}-${index}-locator`;
+        const availableSources = sources.filter((source) => source.id === citation.sourceId || !citations.some((other, otherIndex) => otherIndex !== index && other.sourceId === source.id));
+        const selected = sources.find((source) => source.id === citation.sourceId);
+        const defaultLocator = selected?.kind === "manual"
+          ? selected.locatorRange
+            ? `${selected.locatorRange.kind} ${selected.locatorRange.first}${selected.locatorRange.last > selected.locatorRange.first ? `–${selected.locatorRange.last}` : ""}`
+            : selected.fileName
+          : selected?.locator ?? "Source location not specified";
+        return <div key={`${fieldKey}-${citation.sourceId}-${index}`} className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+          <div>
+            <label htmlFor={selectId} className="mb-1 block text-xs font-medium text-muted">Reviewed source</label>
+            <select id={selectId} disabled={disabled} className={controlClass} value={citation.sourceId} onChange={(event) => onChange(citations.map((item, current) => current === index ? { ...item, sourceId: event.target.value } : item))}>
+              {availableSources.map((source) => <option key={source.id} value={source.id}>{sourceName(source)} · {source.kind === "manual" ? source.fileName : "Planner data"}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor={locatorId} className="mb-1 block text-xs font-medium text-muted">Specific location (optional)</label>
+            <input id={locatorId} disabled={disabled} maxLength={500} className={controlClass} value={citation.locator} onChange={(event) => onChange(citations.map((item, current) => current === index ? { ...item, locator: event.target.value } : item))} placeholder={defaultLocator} />
+          </div>
+          {!disabled && <button type="button" aria-label={`Remove citation ${index + 1} for ${label}`} onClick={() => onChange(citations.filter((_, current) => current !== index))} className="min-h-10 rounded-control border border-border-input px-3 text-xs text-muted hover:bg-panel-raised hover:text-foreground">Remove</button>}
+          <p className="text-xs leading-5 text-muted sm:col-span-2">Default source location: {defaultLocator}. Citations record planner selection; they do not verify technical correctness.</p>
+        </div>;
+      })}
+      {sources.length === 0 && <p className="mt-2 text-xs leading-5 text-muted">No reviewed applicable sources are available in this analysis.</p>}
+    </section>
   );
 }
 
@@ -1217,6 +1269,12 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
   const isApproved = pm.status === "approved";
   const unresolved = pm.operatingState === "undetermined" || !pm.safetyPrecautions.trim();
   const stepsCount = totalPmSteps(pm);
+  const fieldEvidence = pm.fieldEvidence ?? {};
+  const citationSourceIds = new Set(Object.values(fieldEvidence).flatMap((citations) => citations.map((citation) => citation.sourceId)));
+  const citableSources: Array<PlannerEvidence | ManualEvidence> = [
+    ...(analysis.plannerEvidence ? [analysis.plannerEvidence] : []),
+    ...(analysis.manualDocuments ?? []),
+  ].filter((source) => Boolean(source.reviewedAt) && source.applicability === "applicable");
   const overflowActions = overflowText.split(/\r?\n/).filter((action) => action.trim());
   const splitPreview = previewPmSplit(pm, splitAfterTaskStep, overflowActions);
   function change<K extends keyof PmDraft>(key: K, value: PmDraft[K]) {
@@ -1226,6 +1284,16 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
     const taskSteps = [...pm.taskSteps];
     taskSteps[index] = value;
     change("taskSteps", taskSteps);
+  }
+  function changeFieldEvidence(fieldKey: string, citations: PmFieldEvidenceCitation[]) {
+    const nextFieldEvidence = { ...fieldEvidence };
+    if (citations.length) nextFieldEvidence[fieldKey] = citations;
+    else delete nextFieldEvidence[fieldKey];
+    const evidenceSourceIds = [...new Set([
+      ...pm.evidenceSourceIds,
+      ...citations.map((citation) => citation.sourceId),
+    ])];
+    setPm({ ...pm, fieldEvidence: nextFieldEvidence, evidenceSourceIds });
   }
 
   return (
@@ -1265,7 +1333,7 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
             {version.changeSummary && <p className="mt-2 whitespace-pre-wrap text-sm leading-5 text-muted">{version.changeSummary}</p>}
             <details className="mt-2 text-xs">
               <summary className="cursor-pointer text-accent">View approved snapshot</summary>
-              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-panel-muted p-3 font-sans leading-5 text-foreground">{renderPmText(analysis, version.pm, catalog)}</pre>
+              <pre tabIndex={0} aria-label={`Approved PM revision ${version.revisionNumber} snapshot`} className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-panel-muted p-3 font-sans leading-5 text-foreground">{renderPmText(analysis, version.pm, catalog)}</pre>
             </details>
           </li>)}
         </ol>
@@ -1284,8 +1352,8 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
             <div className="flex items-center gap-2 text-sm font-semibold"><BookOpenCheck size={16} className="text-accent" aria-hidden="true" />Evidence reference</div>
             {analysis.plannerEvidence?.reviewedAt ? <>
               <label className="mt-3 flex cursor-pointer items-start gap-3 text-sm leading-6">
-                <input type="checkbox" disabled={isApproved} checked={pm.evidenceSourceIds.includes(analysis.plannerEvidence.id)} onChange={(event) => change("evidenceSourceIds", event.target.checked ? [...new Set([...pm.evidenceSourceIds, analysis.plannerEvidence!.id])] : pm.evidenceSourceIds.filter((id) => id !== analysis.plannerEvidence!.id))} className="mt-1 h-4 w-4 accent-accent" />
-                <span>Include the reviewed planner-provided source in this PM.</span>
+                <input type="checkbox" disabled={isApproved || citationSourceIds.has(analysis.plannerEvidence.id)} checked={pm.evidenceSourceIds.includes(analysis.plannerEvidence.id)} onChange={(event) => change("evidenceSourceIds", event.target.checked ? [...new Set([...pm.evidenceSourceIds, analysis.plannerEvidence!.id])] : pm.evidenceSourceIds.filter((id) => id !== analysis.plannerEvidence!.id))} className="mt-1 h-4 w-4 accent-accent" />
+                <span>Include the reviewed planner-provided source in this PM.{citationSourceIds.has(analysis.plannerEvidence.id) ? " A field citation uses this source." : ""}</span>
               </label>
               <dl className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                 <div><dt className="text-muted">Reference</dt><dd className="mt-1 font-medium">{analysis.plannerEvidence.title || "Planner-provided information"}</dd></div>
@@ -1297,8 +1365,8 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
             </> : <p className="mt-2 text-sm leading-6 text-muted">Review and save a source record before attaching it to the PM.</p>}
             {(analysis.manualDocuments ?? []).filter((source) => source.reviewedAt).map((source) => <div key={source.id} className="mt-4 border-t border-border pt-3">
               <label className="flex cursor-pointer items-start gap-3 text-sm leading-6">
-                <input type="checkbox" disabled={isApproved} checked={pm.evidenceSourceIds.includes(source.id)} onChange={(event) => change("evidenceSourceIds", event.target.checked ? [...new Set([...pm.evidenceSourceIds, source.id])] : pm.evidenceSourceIds.filter((id) => id !== source.id))} className="mt-1 h-4 w-4 accent-accent" />
-                <span>Include reviewed manual: <strong>{source.fileName}</strong></span>
+                <input type="checkbox" disabled={isApproved || citationSourceIds.has(source.id)} checked={pm.evidenceSourceIds.includes(source.id)} onChange={(event) => change("evidenceSourceIds", event.target.checked ? [...new Set([...pm.evidenceSourceIds, source.id])] : pm.evidenceSourceIds.filter((id) => id !== source.id))} className="mt-1 h-4 w-4 accent-accent" />
+                <span>Include reviewed manual: <strong>{source.fileName}</strong>.{citationSourceIds.has(source.id) ? " A field citation uses this source." : ""}</span>
               </label>
               <dl className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                 <div><dt className="text-muted">Location</dt><dd className="mt-1">{source.pageCount === null ? "DOCX paragraph or section reference" : `${source.pageCount} page${source.pageCount === 1 ? "" : "s"}`}</dd></div>
@@ -1310,12 +1378,21 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
             {(analysis.manualDocuments ?? []).some((source) => !source.reviewedAt) && <p className="mt-3 rounded-control border border-warning/40 bg-warning/5 p-3 text-xs leading-5 text-muted">An unreviewed manual source cannot be attached to this PM.</p>}
           </div>
 
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <FieldEvidenceEditor fieldKey="frequency" label="frequency" citations={fieldEvidence.frequency ?? []} sources={citableSources} disabled={isApproved} onChange={(citations) => changeFieldEvidence("frequency", citations)} />
+            <FieldEvidenceEditor fieldKey="durationMinutes" label="estimated duration" citations={fieldEvidence.durationMinutes ?? []} sources={citableSources} disabled={isApproved} onChange={(citations) => changeFieldEvidence("durationMinutes", citations)} />
+          </div>
+
           <div className="rounded-card border border-border bg-panel-muted p-4">
             <h3 className="text-sm font-semibold">Opening statement and safety information</h3>
             <p className="mt-1 text-xs leading-5 text-muted">These fields form the first PM step. Enter only details you can support; this prototype does not determine operating state or LOTO requirements.</p>
             <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
               <Field label="Operating state" htmlFor="operating-state"><select id="operating-state" disabled={isApproved} className={controlClass} value={pm.operatingState} onChange={(event) => change("operatingState", event.target.value as OperatingState)}><option value="running">Running</option><option value="stopped">Stopped</option><option value="undetermined">Not determined</option></select></Field>
               <Field label="Safety precautions / LOTO details" htmlFor="safety-precautions" hint="If the information is unknown, leave blank and acknowledge that it remains unresolved."><input id="safety-precautions" disabled={isApproved} className={controlClass} value={pm.safetyPrecautions} onChange={(event) => change("safetyPrecautions", event.target.value)} placeholder="Planner-provided precaution" /></Field>
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <FieldEvidenceEditor fieldKey="operatingState" label="operating state" citations={fieldEvidence.operatingState ?? []} sources={citableSources} disabled={isApproved} onChange={(citations) => changeFieldEvidence("operatingState", citations)} />
+              <FieldEvidenceEditor fieldKey="safetyPrecautions" label="safety precautions" citations={fieldEvidence.safetyPrecautions ?? []} sources={citableSources} disabled={isApproved} onChange={(citations) => changeFieldEvidence("safetyPrecautions", citations)} />
             </div>
             {unresolved && <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-control border border-warning/40 bg-warning/5 p-3 text-sm leading-5 text-muted"><input type="checkbox" disabled={isApproved} checked={pm.unresolvedSafetyAcknowledged} onChange={(event) => change("unresolvedSafetyAcknowledged", event.target.checked)} className="mt-0.5 h-4 w-4 accent-accent" /><span>Operating state or safety information remains unresolved. Keep that limitation visible and require planner review before approval.</span></label>}
           </div>
@@ -1329,10 +1406,15 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
               <ProcedureRow number={1} label="Opening statement" text={openingPmStep(pm)} onCopy={() => onCopyStep("1", openingPmStep(pm))} />
               {pm.taskSteps.map((task, index) => <li key={`task-${index}`} className="flex items-start gap-2 rounded-control border border-border bg-panel p-2.5">
                 <span className="mt-2 grid h-6 w-6 shrink-0 place-items-center rounded-pill border border-border-input text-xs font-medium text-muted">{index + 2}</span>
-                <label htmlFor={`task-step-${index}`} className="sr-only">Task step {index + 1}</label>
-                <textarea id={`task-step-${index}`} disabled={isApproved} rows={2} className="min-h-10 min-w-0 flex-1 resize-y bg-transparent px-1 py-1 text-sm leading-5 text-foreground placeholder:text-muted" value={task} onChange={(event) => changeTaskStep(index, event.target.value)} placeholder="Enter a planner-authored task step" />
-                <button type="button" aria-label={`Copy task step ${index + 1}`} onClick={() => onCopyStep(String(index + 2), task)} className="rounded-control p-2 text-muted hover:bg-panel-raised hover:text-foreground"><Clipboard size={15} aria-hidden="true" /></button>
-                <button type="button" disabled={isApproved} aria-label={`Remove task step ${index + 1}`} onClick={() => change("taskSteps", pm.taskSteps.filter((_, current) => current !== index))} className="rounded-control p-2 text-muted hover:bg-panel-raised hover:text-danger disabled:opacity-50"><Trash2 size={15} aria-hidden="true" /></button>
+                <div className="min-w-0 flex-1">
+                  <label htmlFor={`task-step-${index}`} className="sr-only">Task step {index + 1}</label>
+                  <textarea id={`task-step-${index}`} disabled={isApproved} rows={2} className="min-h-10 w-full resize-y bg-transparent px-1 py-1 text-sm leading-5 text-foreground placeholder:text-muted" value={task} onChange={(event) => changeTaskStep(index, event.target.value)} placeholder="Enter a planner-authored task step" />
+                  <FieldEvidenceEditor fieldKey={`taskStep:${index}`} label={`task step ${index + 1}`} citations={fieldEvidence[`taskStep:${index}`] ?? []} sources={citableSources} disabled={isApproved} onChange={(citations) => changeFieldEvidence(`taskStep:${index}`, citations)} />
+                </div>
+                <div className="flex shrink-0 flex-col gap-1">
+                  <button type="button" aria-label={`Copy task step ${index + 1}`} onClick={() => onCopyStep(String(index + 2), task)} className="rounded-control p-2 text-muted hover:bg-panel-raised hover:text-foreground"><Clipboard size={15} aria-hidden="true" /></button>
+                  <button type="button" disabled={isApproved} aria-label={`Remove task step ${index + 1}`} onClick={() => setPm({ ...pm, taskSteps: pm.taskSteps.filter((_, current) => current !== index), fieldEvidence: removePmTaskStepEvidence(fieldEvidence, index) })} className="rounded-control p-2 text-muted hover:bg-panel-raised hover:text-danger disabled:opacity-50"><Trash2 size={15} aria-hidden="true" /></button>
+                </div>
               </li>)}
               <ProcedureRow number={pm.taskSteps.length + 2} label="Final verification" text={pm.finalVerification.trim() || "Not provided"} onCopy={() => onCopyStep(String(pm.taskSteps.length + 2), `Verify and record: ${pm.finalVerification}`)} />
             </ol>
@@ -1382,6 +1464,7 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
             </div>}
             <div className="mt-4 border-t border-border pt-4">
               <Field label="Final verification content" htmlFor="final-verification"><textarea id="final-verification" disabled={isApproved} rows={2} className={textAreaClass} value={pm.finalVerification} onChange={(event) => change("finalVerification", event.target.value)} placeholder="Describe what the planner should verify and record at the end…" /></Field>
+              <FieldEvidenceEditor fieldKey="finalVerification" label="final verification" citations={fieldEvidence.finalVerification ?? []} sources={citableSources} disabled={isApproved} onChange={(citations) => changeFieldEvidence("finalVerification", citations)} />
             </div>
           </div>
 

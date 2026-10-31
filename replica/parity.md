@@ -18,7 +18,7 @@ The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-sco
 | --- | --- | --- |
 | Analyze one equipment with location and area | Partial | Intake and persistence are implemented in authenticated development. Locations and areas use synthetic seed data; operational catalog provisioning is not implemented. |
 | Use manuals, external research, or planner data as PM sources | Partial | Planner notes and the manual flow exist. PDF/DOCX/image extraction ran locally; a synthetic PDF was saved, read back, reopened, reviewed, and referenced in a PM. New uploads currently fail closed because byte/page limits are unset. External research and technical generation are deferred. |
-| Preserve source provenance, evidence references, and limitations | Partial | Planner/manual source metadata, applicability, locators, review state, and limitations persist; reviewed references appear in PM preview and copy. Extracted manual text remains in the browser. Field-level citations and external-source references are absent. |
+| Preserve source provenance, evidence references, and limitations | Partial | Planner/manual source metadata, applicability, locators, review state, and limitations persist. Reviewed applicable sources can be linked to individual PM fields and appear in preview/copy and retained snapshots. Extracted manual text remains in the browser. External-source references are absent while research is deferred. |
 | Propose direct sub-assets under equipment | Yes | The equipment root and its direct children can be edited, individually confirmed, and saved. Deeper hierarchy is not supported. |
 | Generate an English PM with safety, operating state, actions, and final verification | Partial | The editor supports planner-authored fields for these elements. It does not generate or technically validate PM content. Generation is deferred under ADR 0002. |
 | Enforce a 15-step limit and ask before splitting | Yes | At the cap, the planner can enter overflow actions, choose a boundary, review both resulting procedures and their counts, and explicitly confirm saving two independent drafts. Cancel and over-limit cases are covered by F04. Each proposal creates two PMs; an approved revision cannot be split in this build. |
@@ -48,7 +48,7 @@ These are the parity tool's five incomplete must-haves, in its priority order. T
 2. **Single-equipment intake with operational location and area — partial.** The authenticated intake works, but its current location and area catalog is synthetic. Catalog source and provisioning remain open under Q4.
 3. **PM content generation — partial.** The editor supports planner-authored fields but does not generate or technically validate instructions. Generation remains deferred under ADR 0002 pending a data-handling/provider decision.
 4. **Manual, OEM, external-research, or planner sources — partial.** Planner notes and local manual extraction exist. Uploads fail closed until numeric limits are configured; external research remains deferred.
-5. **Source provenance and evidence references — partial.** Source metadata, locators, review state, and limitations persist, but PM fields do not have field-level citations and external-source references are absent.
+5. **Source provenance and evidence references — partial.** Field-level citations now link PM fields to reviewed applicable planner/manual sources. External-source references remain absent while research is deferred; a citation records planner selection and does not establish technical correctness.
 
 ## Layout and behavior comparison
 
@@ -68,9 +68,9 @@ There are no workflow screenshots in `replica/screens/`. The MacroCap Labs sign-
 
 The current QA evidence is summarized in [`test-plan.md`](test-plan.md). It records local extraction for all four approved manual formats, authenticated development save/read-back for a synthetic PDF, responsive checks, the automated file-chooser path, and cross-account download denial. The Windows shell file dialog itself was not observed because Playwright supplied the file through `FileChooser.setFiles`.
 
-## Recommended next build slice
+## Recommended next workflow step
 
-**[Inference] Recommended next build slice: add field-level evidence citations to PM fields using only already reviewed planner/manual sources.** This advances a current must-have without choosing an external generation, research, or speech provider. Keep the language/voice, operational-catalog, generation, and production-upload decisions visible as dependencies; do not infer citations or technical support from a source when none is recorded.
+**[Inference] Run `/replica-diff` again to refresh the gap ranking before selecting another build slice.** The next build choice depends on resolving the operational catalog source or separate language/provider decisions; research, technical generation, and speech remain deferred. Field citations record planner selection and do not establish technical correctness.
 
 Production uploads remain gated by capacity, numeric limits, backups, retention, and a restore test.
 

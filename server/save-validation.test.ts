@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { PlannerAnalysis, PmDraft } from "../src/domain/planner.js";
 import { PLANNER_EVIDENCE_BASE_LIMITATION } from "../src/domain/planner.js";
-import { assertReviewedManualReferences, parseSaveBody } from "./save-validation.js";
+import { assertApplicableManualCitations, assertReviewedManualReferences, parseSaveBody } from "./save-validation.js";
 
 const ids = {
   operation: "11111111-1111-4111-8111-111111111111",
@@ -51,6 +51,7 @@ function validBody() {
     taskSteps: ["Planner-authored synthetic step"],
     finalVerification: "Record result",
     evidenceSourceIds: [ids.source],
+    fieldEvidence: {},
     status: "draft",
     createdAt: "2026-10-31T12:00:00.000Z",
   };
@@ -90,11 +91,66 @@ test("accepts a PM reference to the reviewed source on its analysis", () => {
   assert.deepEqual(parsed.analysis.pm?.evidenceSourceIds, [ids.source]);
 });
 
+test("accepts field-level citations to a reviewed applicable source and preserves locator overrides", () => {
+  const body = validBody();
+  body.analysis.pm!.fieldEvidence = {
+    frequency: [{ sourceId: ids.source, locator: "Planner notes, section 2" }],
+    "taskStep:0": [{ sourceId: ids.source, locator: "Paragraph supplied by planner" }],
+  };
+  const parsed = parseSaveBody(body);
+  assert.deepEqual(parsed.analysis.pm?.fieldEvidence, body.analysis.pm!.fieldEvidence);
+});
+
 test("accepts a PM reference to a reviewed manual attached to the same analysis", () => {
   const body = validBody();
   body.analysis.manualDocuments = [validManual()];
   body.analysis.pm!.evidenceSourceIds = [ids.manualSource];
   assert.deepEqual(parseSaveBody(body).analysis.pm?.evidenceSourceIds, [ids.manualSource]);
+});
+
+test("accepts a field citation to a reviewed applicable manual attached to the analysis", () => {
+  const body = validBody();
+  body.analysis.manualDocuments = [validManual()];
+  body.analysis.pm!.evidenceSourceIds = [ids.manualSource];
+  body.analysis.pm!.fieldEvidence = { "taskStep:0": [{ sourceId: ids.manualSource, locator: "Page 1" }] };
+  assert.deepEqual(parseSaveBody(body).analysis.pm?.fieldEvidence, body.analysis.pm!.fieldEvidence);
+  assert.doesNotThrow(() => assertApplicableManualCitations([ids.manualSource], [ids.manualSource]));
+});
+
+test("rejects field citations to unreviewed or non-applicable sources", () => {
+  const unreviewed = validBody();
+  unreviewed.analysis.manualDocuments = [validManual()];
+  unreviewed.analysis.manualDocuments[0].reviewedAt = undefined;
+  unreviewed.analysis.pm!.evidenceSourceIds = [ids.manualSource];
+  unreviewed.analysis.pm!.fieldEvidence = { frequency: [{ sourceId: ids.manualSource, locator: "Page 1" }] };
+  assert.throws(() => parseSaveBody(unreviewed), /reviewed source marked applicable/i);
+
+  const differentVariant = validBody();
+  differentVariant.analysis.manualDocuments = [{ ...validManual(), applicability: "different_variant" }];
+  differentVariant.analysis.pm!.evidenceSourceIds = [ids.manualSource];
+  differentVariant.analysis.pm!.fieldEvidence = { frequency: [{ sourceId: ids.manualSource, locator: "Page 1" }] };
+  assert.throws(() => parseSaveBody(differentVariant), /reviewed source marked applicable/i);
+  assert.throws(() => assertApplicableManualCitations([ids.manualSource], []), /reviewed, applicable manual/i);
+});
+
+test("rejects field citations to missing sources or fields outside the PM", () => {
+  const missing = validBody();
+  missing.analysis.pm!.fieldEvidence = { frequency: [{ sourceId: ids.otherSource, locator: "Page 1" }] };
+  assert.throws(() => parseSaveBody(missing), /source attached to this analysis and pm/i);
+
+  const invalidField = validBody();
+  invalidField.analysis.pm!.fieldEvidence = { "taskStep:1": [{ sourceId: ids.source, locator: "Page 1" }] };
+  assert.throws(() => parseSaveBody(invalidField), /invalid field key/i);
+});
+
+test("rejects malformed or overlong field citation locators", () => {
+  const malformed = validBody();
+  malformed.analysis.pm!.fieldEvidence = { frequency: [{ sourceId: ids.source, locator: "x".repeat(501) }] };
+  assert.throws(() => parseSaveBody(malformed), /locators must be 500 characters or fewer/i);
+
+  const invalid = validBody();
+  invalid.analysis.pm!.fieldEvidence = { unsupported: [] };
+  assert.throws(() => parseSaveBody(invalid), /invalid field key/i);
 });
 
 test("rejects a PM reference to a manual that is not attached to the analysis", () => {

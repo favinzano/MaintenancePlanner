@@ -10,6 +10,14 @@ export function assertReviewedManualReferences(referencedIds: readonly string[],
   }
 }
 
+export function assertApplicableManualCitations(citedIds: readonly string[], verifiedApplicableIds: readonly string[]): void {
+  const verified = new Set(verifiedApplicableIds);
+  if (verified.size !== verifiedApplicableIds.length || citedIds.length !== verifiedApplicableIds.length ||
+      citedIds.some((id) => !verified.has(id))) {
+    throw Object.assign(new Error("Field citations require a reviewed, applicable manual source attached to this analysis."), { statusCode: 422 });
+  }
+}
+
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -98,12 +106,52 @@ export function parseSaveBody(body: unknown): SaveBody {
     if (new Set(pm.evidenceSourceIds as string[]).size !== (pm.evidenceSourceIds as string[]).length) {
       throw Object.assign(new Error("PM evidence references must be unique."), { statusCode: 400 });
     }
+    const fieldEvidence = pm.fieldEvidence === undefined ? {} : pm.fieldEvidence;
+    if (!isRecord(fieldEvidence)) {
+      throw Object.assign(new Error("PM field evidence must be a map of PM fields to citations."), { statusCode: 400 });
+    }
+    pm.fieldEvidence = fieldEvidence;
     const validSourceIds = new Set([evidence.id, ...manualDocuments.map((manual) => String((manual as Record<string, unknown>).id))]);
     if ((pm.evidenceSourceIds as string[]).some((id) => !validSourceIds.has(id))) {
       throw Object.assign(new Error("A PM may reference only a source attached to this analysis."), { statusCode: 422 });
     }
     if ((pm.evidenceSourceIds as string[]).includes(evidence.id) && typeof evidence.reviewedAt !== "string") {
       throw Object.assign(new Error("Review the planner source before attaching it to a PM."), { statusCode: 422 });
+    }
+    const sourceRecords = new Map<string, Record<string, unknown>>([
+      [String(evidence.id), evidence],
+      ...manualDocuments.map((manual) => [String((manual as Record<string, unknown>).id), manual as Record<string, unknown>] as const),
+    ]);
+    let totalCitations = 0;
+    for (const [fieldKey, citations] of Object.entries(fieldEvidence)) {
+      const taskMatch = /^taskStep:(\d+)$/.exec(fieldKey);
+      const validField = ["frequency", "durationMinutes", "operatingState", "safetyPrecautions", "finalVerification"].includes(fieldKey);
+      if ((!validField && !taskMatch) || (taskMatch && Number(taskMatch[1]) >= (plan.taskSteps?.length ?? 0)) ||
+          !Array.isArray(citations) || citations.length > 5) {
+        throw Object.assign(new Error("A PM field citation has an invalid field key or citation list."), { statusCode: 400 });
+      }
+      const fieldSourceIds = new Set<string>();
+      for (const citation of citations) {
+        if (!isRecord(citation) || typeof citation.sourceId !== "string" || !uuidPattern.test(citation.sourceId) ||
+            typeof citation.locator !== "string" || citation.locator.length > 500) {
+          throw Object.assign(new Error("A PM field citation is invalid. Locators must be 500 characters or fewer."), { statusCode: 400 });
+        }
+        totalCitations += 1;
+        const source = sourceRecords.get(citation.sourceId);
+        if (!source || !(pm.evidenceSourceIds as string[]).includes(citation.sourceId)) {
+          throw Object.assign(new Error("A field citation must reference a source attached to this analysis and PM."), { statusCode: 422 });
+        }
+        if (typeof source.reviewedAt !== "string" || source.applicability !== "applicable") {
+          throw Object.assign(new Error("Field citations require a reviewed source marked applicable to this equipment."), { statusCode: 422 });
+        }
+        if (fieldSourceIds.has(citation.sourceId)) {
+          throw Object.assign(new Error("A PM field cannot cite the same source more than once."), { statusCode: 400 });
+        }
+        fieldSourceIds.add(citation.sourceId);
+      }
+    }
+    if (totalCitations > 30) {
+      throw Object.assign(new Error("A PM may contain no more than 30 field citations."), { statusCode: 400 });
     }
     if ((plan.taskSteps?.length ?? 0) + 2 > MAX_PM_STEPS) {
       throw Object.assign(new Error(`Keep the PM to ${MAX_PM_STEPS} steps or fewer.`), { statusCode: 422 });

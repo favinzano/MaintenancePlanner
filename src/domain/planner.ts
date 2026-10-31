@@ -76,6 +76,13 @@ export type ManualExtraction = {
   limitations: string[];
 };
 
+export type PmFieldEvidenceCitation = {
+  sourceId: string;
+  locator: string;
+};
+
+export type PmFieldEvidence = Record<string, PmFieldEvidenceCitation[]>;
+
 export type PmDraft = {
   id: string;
   title: string;
@@ -88,6 +95,7 @@ export type PmDraft = {
   taskSteps: string[];
   finalVerification: string;
   evidenceSourceIds: string[];
+  fieldEvidence: PmFieldEvidence;
   status: "draft" | "approved";
   createdAt: string;
   approvedAt?: string;
@@ -210,6 +218,7 @@ export function createEmptyPm(analysis: PlannerAnalysis): PmDraft {
     unresolvedSafetyAcknowledged: false,
     taskSteps: [],
     finalVerification: "",
+    fieldEvidence: {},
     evidenceSourceIds: [
       ...(analysis.plannerEvidence?.reviewedAt && analysis.plannerEvidence.applicability === "applicable" ? [analysis.plannerEvidence.id] : []),
       ...(analysis.manualDocuments ?? []).filter((source) => source.reviewedAt && source.applicability === "applicable").map((source) => source.id),
@@ -262,18 +271,52 @@ export function previewPmSplit(pm: PmDraft, splitAfterTaskStep: number, overflow
 export function createPmSplitDrafts(pm: PmDraft, splitAfterTaskStep: number, overflowActions: string[]): [PmDraft, PmDraft] {
   const preview = previewPmSplit(pm, splitAfterTaskStep, overflowActions);
   if (preview.issue) throw new Error(preview.issue);
-  const first: PmDraft = { ...pm, taskSteps: preview.firstTaskSteps };
+  const [firstFieldEvidence, secondFieldEvidence] = splitPmFieldEvidence(pm.fieldEvidence ?? {}, splitAfterTaskStep);
+  const first: PmDraft = { ...pm, taskSteps: preview.firstTaskSteps, fieldEvidence: firstFieldEvidence };
   const second: PmDraft = {
     ...pm,
     id: createId(),
     createdAt: new Date(Date.parse(pm.createdAt) + 1).toISOString(),
     taskSteps: preview.secondTaskSteps,
+    fieldEvidence: secondFieldEvidence,
     status: "draft",
     approvedAt: undefined,
     revisionNumber: undefined,
     baseRevisionNumber: undefined,
     changeSummary: "",
   };
+  return [first, second];
+}
+
+export function removePmTaskStepEvidence(fieldEvidence: PmFieldEvidence | undefined, removedIndex: number): PmFieldEvidence {
+  const next: PmFieldEvidence = {};
+  for (const [key, citations] of Object.entries(fieldEvidence ?? {})) {
+    const match = /^taskStep:(\d+)$/.exec(key);
+    if (!match) {
+      next[key] = citations;
+      continue;
+    }
+    const index = Number(match[1]);
+    if (index === removedIndex) continue;
+    next[`taskStep:${index > removedIndex ? index - 1 : index}`] = citations;
+  }
+  return next;
+}
+
+function splitPmFieldEvidence(fieldEvidence: PmFieldEvidence, splitAfterTaskStep: number): [PmFieldEvidence, PmFieldEvidence] {
+  const first: PmFieldEvidence = {};
+  const second: PmFieldEvidence = {};
+  for (const [key, citations] of Object.entries(fieldEvidence)) {
+    const match = /^taskStep:(\d+)$/.exec(key);
+    if (!match) {
+      first[key] = citations;
+      second[key] = citations;
+      continue;
+    }
+    const index = Number(match[1]);
+    if (index < splitAfterTaskStep) first[key] = citations;
+    else second[`taskStep:${index - splitAfterTaskStep}`] = citations;
+  }
   return [first, second];
 }
 
@@ -315,19 +358,42 @@ export function renderPmText(analysis: PlannerAnalysis, pm: PmDraft, catalog: Ca
   const duration = durationValue
     ? `${durationValue} ${Number(durationValue) === 1 ? "minute" : "minutes"}`
     : "Not established";
+  const sourcesById = new Map<string, PlannerEvidence | ManualEvidence>([
+    ...(analysis.plannerEvidence ? [[analysis.plannerEvidence.id, analysis.plannerEvidence] as const] : []),
+    ...(analysis.manualDocuments ?? []).map((source) => [source.id, source] as const),
+  ]);
+  const fieldCitationLines = (fieldKey: string, label: string) => (pm.fieldEvidence?.[fieldKey] ?? []).flatMap((citation) => {
+    const source = sourcesById.get(citation.sourceId);
+    if (!source) return [];
+    const title = source.title.trim() || (source.kind === "manual" ? source.fileName : "Planner-provided information");
+    const defaultLocator = source.kind === "manual"
+      ? source.locatorRange
+        ? `${source.locatorRange.kind} ${source.locatorRange.first}${source.locatorRange.last > source.locatorRange.first ? `–${source.locatorRange.last}` : ""}`
+        : source.fileName
+      : source.locator;
+    return [`  Evidence for ${label}: ${title} · ${citation.locator.trim() || defaultLocator.trim() || "Source location not specified"}`];
+  });
   const lines = [
     `PlannerMC · ${pm.status === "approved" ? "APPROVED" : "DRAFT"}`,
     pm.title.trim(),
     `Asset: ${asset?.name ?? "Not selected"}`,
     `Location: ${location?.name ?? "Not selected"} / ${area?.name ?? "Not selected"}`,
     `Frequency: ${pm.frequency.trim() || "Not established"}`,
+    ...fieldCitationLines("frequency", "frequency"),
     `Estimated duration: ${duration}`,
+    ...fieldCitationLines("durationMinutes", "estimated duration"),
     "",
     "Procedure",
     `1. ${openingPmStep(pm)}`,
+    ...fieldCitationLines("operatingState", "operating state"),
+    ...fieldCitationLines("safetyPrecautions", "safety precautions"),
   ];
-  pm.taskSteps.filter((step) => step.trim()).forEach((step, index) => lines.push(`${index + 2}. ${step.trim()}`));
+  pm.taskSteps.filter((step) => step.trim()).forEach((step, index) => {
+    lines.push(`${index + 2}. ${step.trim()}`);
+    lines.push(...fieldCitationLines(`taskStep:${index}`, `task step ${index + 1}`));
+  });
   lines.push(`${pm.taskSteps.filter((step) => step.trim()).length + 2}. Verify and record: ${pm.finalVerification.trim() || "Not provided"}`);
+  lines.push(...fieldCitationLines("finalVerification", "final verification"));
   lines.push("", "Evidence references");
   const evidence: Array<PlannerEvidence | ManualEvidence> = [
     ...(analysis.plannerEvidence && pm.evidenceSourceIds?.includes(analysis.plannerEvidence.id) ? [analysis.plannerEvidence] : []),
