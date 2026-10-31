@@ -1,4 +1,4 @@
-import { createId, createPlannerEvidence, sampleCatalog, type AdditionalPmPlan, type CatalogLocation, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../domain/planner";
+import { createId, createPlannerEvidence, discardPmDraft, sampleCatalog, type AdditionalPmPlan, type CatalogLocation, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../domain/planner";
 
 const storageKey = "plannermc-local-prototype-v1";
 
@@ -12,6 +12,7 @@ export type WorkspaceSnapshot = {
 export interface PlannerDataStore {
   load(): Promise<WorkspaceSnapshot>;
   saveAnalysis(analysis: PlannerAnalysis): Promise<WorkspaceSnapshot>;
+  deletePmDraft(analysisId: string, pmId: string, expectedRowVersion: number, operationId: string): Promise<WorkspaceSnapshot>;
 }
 
 function emptySnapshot(): Omit<WorkspaceSnapshot, "catalog"> {
@@ -158,6 +159,25 @@ export class LocalPrototypeStore implements PlannerDataStore {
       currentAnalysisId: savedAnalysis.id,
     };
     this.writeAndVerify(next, savedAnalysis.id, savedAnalysis.updatedAt);
+    return next;
+  }
+
+    async deletePmDraft(analysisId: string, pmId: string, expectedRowVersion: number, _operationId: string): Promise<WorkspaceSnapshot> {
+    const current = await this.load();
+    const existing = current.analyses.find((item) => item.id === analysisId);
+    if (!existing) throw new Error("This analysis is not available in the current workspace.");
+    if (existing.rowVersion !== expectedRowVersion) {
+      throw new Error("This analysis changed in another tab or session. Reload it and review the saved version before continuing.");
+    }
+    const updatedAt = new Date().toISOString();
+    const discarded = discardPmDraft(existing, pmId, updatedAt);
+    const savedAnalysis = { ...discarded, rowVersion: existing.rowVersion + 1 };
+    const next: WorkspaceSnapshot = {
+      ...current,
+      analyses: current.analyses.map((item) => item.id === analysisId ? savedAnalysis : item),
+      currentAnalysisId: analysisId,
+    };
+    this.writeAndVerify(next, analysisId, updatedAt);
     return next;
   }
 

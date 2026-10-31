@@ -303,6 +303,61 @@ export function removePmTaskStepEvidence(fieldEvidence: PmFieldEvidence | undefi
   return next;
 }
 
+export function discardPmDraft(analysis: PlannerAnalysis, pmId: string, updatedAt = new Date().toISOString()): PlannerAnalysis {
+  const primary = analysis.pm?.id === pmId
+    ? { pm: analysis.pm, pmVersions: analysis.pmVersions ?? [] }
+    : undefined;
+  const additional = analysis.additionalPms ?? [];
+  const additionalIndex = additional.findIndex((record) => record.pm.id === pmId);
+  const target = primary ?? (additionalIndex >= 0 ? additional[additionalIndex] : undefined);
+  if (!target) throw new Error("This PM draft is not available in the current analysis.");
+  if (target.pm.status !== "draft") throw new Error("Only a saved PM draft can be deleted.");
+
+  const history = target.pmVersions;
+  if (history.length) {
+    const latest = history.at(-1)!;
+    const restored: PmDraft = {
+      ...latest.pm,
+      status: "approved",
+      approvedAt: latest.approvedAt,
+      revisionNumber: latest.revisionNumber,
+      baseRevisionNumber: undefined,
+      changeSummary: latest.changeSummary ?? "",
+    };
+    if (primary) return { ...analysis, pm: restored, pmVersions: history, updatedAt };
+    const nextAdditional = [...additional];
+    nextAdditional[additionalIndex] = { ...target, pm: restored, pmVersions: history };
+    return { ...analysis, additionalPms: nextAdditional, updatedAt };
+  }
+
+  if (primary) {
+    const [promoted, ...remaining] = additional;
+    if (promoted) {
+      return {
+        ...analysis,
+        pm: promoted.pm,
+        pmVersions: promoted.pmVersions,
+        additionalPms: remaining,
+        updatedAt,
+      };
+    }
+    return {
+      ...analysis,
+      pm: undefined,
+      pmVersions: [],
+      additionalPms: [],
+      stage: Math.min(analysis.stage, 2),
+      updatedAt,
+    };
+  }
+
+  return {
+    ...analysis,
+    additionalPms: additional.filter((_, index) => index !== additionalIndex),
+    updatedAt,
+  };
+}
+
 function splitPmFieldEvidence(fieldEvidence: PmFieldEvidence, splitAfterTaskStep: number): [PmFieldEvidence, PmFieldEvidence] {
   const first: PmFieldEvidence = {};
   const second: PmFieldEvidence = {};

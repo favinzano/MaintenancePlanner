@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type FormEvent, type PropsWithChildren } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -176,6 +177,7 @@ function PlannerWorkspace() {
   const [approvalIssues, setApprovalIssues] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const pendingDeleteOperationIds = useRef(new Map<string, string>());
   const noticeTimeoutRef = useRef<number | undefined>(undefined);
   const [authReady, setAuthReady] = useState(!backendMode);
   const [authenticated, setAuthenticated] = useState(false);
@@ -321,6 +323,46 @@ function PlannerWorkspace() {
       savingRef.current = false;
       setSaving(false);
     }
+  }
+
+  async function deletePmDraft(pmId: string): Promise<boolean> {
+    if (!analysis || savingRef.current) return false;
+    savingRef.current = true;
+    setSaving(true);
+    setError("");
+    const operationId = pendingDeleteOperationIds.current.get(pmId) ?? crypto.randomUUID();
+    pendingDeleteOperationIds.current.set(pmId, operationId);
+    try {
+      const next = await dataStore.deletePmDraft(analysis.id, pmId, analysis.rowVersion, operationId);
+      const saved = next.analyses.find((item) => item.id === analysis.id);
+      if (!saved) throw new Error("The PM draft deletion could not be verified from the saved workspace.");
+      setSnapshot(next);
+      setAnalysis(saved);
+      const active = getAnalysisPm(saved, pmId) ?? saved.pm ?? saved.additionalPms?.[0]?.pm ?? null;
+      setPm(active);
+      setActivePmId(active?.id ?? null);
+      setStep(active ? 3 : Math.min(saved.stage, 2));
+      setReviewed(false);
+      setApprovalIssues([]);
+      pendingDeleteOperationIds.current.delete(pmId);
+      const restoredRevision = getPmHistory(saved, pmId).length > 0 && active?.id === pmId;
+      showNotice(backendMode
+        ? `${restoredRevision ? "PM revision draft discarded; the approved version was restored." : "PM draft deleted."} Verified in Supabase PostgreSQL. Assets and evidence were retained.`
+        : `${restoredRevision ? "PM revision draft discarded; the approved version was restored." : "PM draft deleted."} Assets and evidence were retained.`);
+      return true;
+    } catch (caught) {
+      const status = caught && typeof caught === "object" && "status" in caught ? Number(caught.status) : 0;
+      if (status >= 400 && status < 500) pendingDeleteOperationIds.current.delete(pmId);
+      setError(caught instanceof Error ? caught.message : "The PM draft deletion could not be verified.");
+      return false;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  function cancelPmDraftDeletion(pmId: string) {
+    pendingDeleteOperationIds.current.delete(pmId);
   }
 
   async function startAnalysis() {
@@ -480,9 +522,10 @@ function PlannerWorkspace() {
       setError("The equipment is not confirmed, while a sub-asset is. Review and acknowledge this relationship before continuing.");
       return;
     }
-    const saved = await saveRecord({ ...analysis, stage: Math.max(analysis.stage, 3) }, "Asset selection saved and read back.");
+    const draft = analysis.pm ?? createEmptyPm(analysis);
+    const saved = await saveRecord({ ...analysis, pm: draft, stage: Math.max(analysis.stage, 3) }, "PM draft started and read back.");
     if (saved) {
-      const nextPm = saved.pm ?? createEmptyPm(saved);
+      const nextPm = saved.pm ?? draft;
       setPm(nextPm);
       setActivePmId(nextPm.id);
       setStep(3);
@@ -739,7 +782,7 @@ function PlannerWorkspace() {
               {step === 0 && <IntakeStep analysis={analysis} catalog={snapshot.catalog} readOnly={analysis.stage >= 2} onChange={updateAnalysis} onSubmit={saveIntake} />}
               {step === 1 && <EvidenceStep analysis={analysis} catalog={snapshot.catalog} manualConfig={manualIntakeConfig} readOnly={analysis.stage >= 2 && Boolean(analysis.plannerEvidence?.reviewedAt)} acknowledged={continueWithLimitations} onAcknowledge={setContinueWithLimitations} onUpdateSource={updatePlannerEvidence} onUploadManual={uploadManual} onReviewManual={reviewManual} onReopenManual={reopenManual} onBack={() => changeStep(0)} onContinue={continueFromEvidence} />}
               {step === 2 && <AssetsStep analysis={analysis} readOnly={currentPmPlans.some((candidate) => candidate.status === "approved")} onUpdate={updateAsset} onAdd={addSubasset} onRemove={removeAsset} parentAcknowledged={parentAcknowledged} onParentAcknowledged={setParentAcknowledged} onBack={() => changeStep(1)} onContinue={continueFromAssets} />}
-              {step === 3 && pm && <PmStep analysis={analysis} pm={pm} pmPlans={currentPmPlans} activePmId={activePmId ?? pm.id} pmVersions={getPmHistory(analysis, pm.id)} setPm={updateActivePm} onSelectPm={selectPm} assets={confirmedAssets} reviewed={reviewed} onReviewed={setReviewed} issues={approvalIssues} catalog={snapshot.catalog} revisionLifecycleEnabled={!backendMode || snapshot.pmRevisionLifecycleEnabled === true} onBack={() => changeStep(2)} onSave={savePmDraft} onApprove={approvePm} onStartRevision={startPmRevision} onCopy={copyPm} onCopyStep={copyStep} onConfirmSplit={confirmPmSplit} />}
+              {step === 3 && pm && <PmStep analysis={analysis} pm={pm} pmPlans={currentPmPlans} activePmId={activePmId ?? pm.id} pmVersions={getPmHistory(analysis, pm.id)} setPm={updateActivePm} onSelectPm={selectPm} assets={confirmedAssets} reviewed={reviewed} onReviewed={setReviewed} issues={approvalIssues} catalog={snapshot.catalog} revisionLifecycleEnabled={!backendMode || snapshot.pmRevisionLifecycleEnabled === true} onBack={() => changeStep(2)} onSave={savePmDraft} onApprove={approvePm} onStartRevision={startPmRevision} onDeleteDraft={deletePmDraft} onCancelDeleteDraft={cancelPmDraftDeletion} onCopy={copyPm} onCopyStep={copyStep} onConfirmSplit={confirmPmSplit} />}
             </>
           )}
           </fieldset>
@@ -1236,7 +1279,7 @@ function AssetRow({ asset, root = false, index, readOnly, onUpdate, onRemove }: 
   );
 }
 
-function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelectPm, assets, reviewed, onReviewed, issues, catalog, revisionLifecycleEnabled, onBack, onSave, onApprove, onStartRevision, onCopy, onCopyStep, onConfirmSplit }: {
+function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelectPm, assets, reviewed, onReviewed, issues, catalog, revisionLifecycleEnabled, onBack, onSave, onApprove, onStartRevision, onDeleteDraft, onCancelDeleteDraft, onCopy, onCopyStep, onConfirmSplit }: {
   analysis: PlannerAnalysis;
   pm: PmDraft;
   pmPlans: PmDraft[];
@@ -1254,11 +1297,15 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
   onSave: () => void;
   onApprove: () => void;
   onStartRevision: () => void;
+  onDeleteDraft: (pmId: string) => Promise<boolean>;
+  onCancelDeleteDraft: (pmId: string) => void;
   onCopy: () => void;
   onCopyStep: (label: string, text: string) => void;
   onConfirmSplit: (splitAfterTaskStep: number, overflowActions: string[]) => Promise<boolean>;
 }) {
   const [splitOpen, setSplitOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
   const [splitAfterTaskStep, setSplitAfterTaskStep] = useState(Math.max(1, Math.floor(pm.taskSteps.length / 2)));
   const [overflowText, setOverflowText] = useState("");
   useEffect(() => {
@@ -1492,12 +1539,44 @@ function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelect
       <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-border pt-5">
         <ActionButton type="button" onClick={onBack} disabled={isApproved || (pmVersions?.length ?? 0) > 0}><ArrowLeft size={15} aria-hidden="true" />Back to assets</ActionButton>
         <div className="flex flex-wrap gap-2">
+          {!isApproved && <ActionButton type="button" data-delete-draft-trigger="true" variant="danger" onClick={() => setDeleteOpen(true)}><Trash2 size={15} aria-hidden="true" />Delete draft</ActionButton>}
           {!isApproved && <ActionButton type="button" onClick={onSave}><Save size={15} aria-hidden="true" />Save draft</ActionButton>}
           {!isApproved && <ActionButton type="button" variant="primary" onClick={onApprove}><CheckCircle2 size={15} aria-hidden="true" />Approve PM</ActionButton>}
           {isApproved && <ActionButton type="button" onClick={onCopy}><ClipboardCheck size={15} aria-hidden="true" />Copy approved PM</ActionButton>}
           {isApproved && <ActionButton type="button" variant="primary" disabled={!revisionLifecycleEnabled} onClick={onStartRevision}><Plus size={15} aria-hidden="true" />Start new revision</ActionButton>}
         </div>
       </div>
+
+      <Dialog.Root open={deleteOpen} onOpenChange={(open) => {
+        setDeleteOpen(open);
+        if (!open) onCancelDeleteDraft(pm.id);
+      }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/70 backdrop-blur-[2px] data-[state=open]:animate-fade-in" />
+          <Dialog.Content onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const trigger = document.querySelector<HTMLButtonElement>("[data-delete-draft-trigger]");
+            if (trigger?.isConnected) trigger.focus();
+            else document.querySelector<HTMLElement>("[data-step-title]")?.focus();
+          }} className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-32px)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-panel border border-border-input bg-panel p-5 shadow-popover data-[state=open]:animate-fade-in sm:p-6">
+            <Dialog.Title className="text-base font-semibold text-foreground">{(pmVersions?.length ?? 0) > 0 ? "Discard this PM revision draft?" : "Delete this PM draft?"}</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm leading-6 text-muted">
+              {(pmVersions?.length ?? 0) > 0
+                ? "This removes the current draft and returns this PM to its latest approved version. Approved history, assets, and evidence remain saved."
+                : "This removes the saved draft and any unsaved edits. The analysis, assets, and evidence remain saved."}
+            </Dialog.Description>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <ActionButton type="button" disabled={deletePending} onClick={() => setDeleteOpen(false)}>Cancel</ActionButton>
+              <ActionButton type="button" variant="danger" disabled={deletePending} onClick={async () => {
+                setDeletePending(true);
+                const deleted = await onDeleteDraft(pm.id);
+                setDeletePending(false);
+                if (deleted) setDeleteOpen(false);
+              }}>{deletePending ? "Deleting…" : "Delete draft"}</ActionButton>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </section>
   );
 }
@@ -1511,7 +1590,7 @@ function ProcedureRow({ number, label, text, onCopy }: { number: number; label: 
 }
 
 function StepTitle({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) {
-  return <div className="mb-6"><p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">{eyebrow}</p><h2 className="text-xl font-semibold tracking-tight sm:text-2xl">{title}</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-muted">{description}</p></div>;
+  return <div className="mb-6"><p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">{eyebrow}</p><h2 data-step-title="true" tabIndex={-1} className="text-xl font-semibold tracking-tight sm:text-2xl">{title}</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-muted">{description}</p></div>;
 }
 
 export default PlannerWorkspace;

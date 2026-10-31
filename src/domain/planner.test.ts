@@ -4,9 +4,82 @@ import {
   createAnalysis,
   createEmptyPm,
   createPmSplitDrafts,
+  discardPmDraft,
   removePmTaskStepEvidence,
   renderPmText,
 } from "./planner.js";
+
+test("deleting an initial PM draft removes only that plan and returns to assets when it was the last plan", () => {
+  const analysis = createAnalysis();
+  analysis.assets = [{ id: "asset-1", kind: "equipment", name: "Synthetic pump", sourceTerm: "", confirmed: true }];
+  const pm = { ...createEmptyPm(analysis), id: "pm-draft-1", title: "Synthetic draft" };
+  analysis.pm = pm;
+  analysis.stage = 3;
+
+  const next = discardPmDraft(analysis, pm.id, "2026-10-31T12:00:00.000Z");
+
+  assert.equal(next.pm, undefined);
+  assert.equal(next.stage, 2);
+  assert.deepEqual(next.assets, analysis.assets);
+  assert.deepEqual(next.manualDocuments, analysis.manualDocuments);
+  assert.equal(next.id, analysis.id);
+});
+
+test("deleting a revision draft restores the latest approved snapshot and retains all history", () => {
+  const analysis = createAnalysis();
+  const approved = {
+    ...createEmptyPm(analysis),
+    id: "pm-revision-1",
+    title: "Approved synthetic PM",
+    status: "approved" as const,
+    approvedAt: "2026-10-30T12:00:00.000Z",
+    revisionNumber: 0,
+  };
+  const history = [{
+    id: "version-1",
+    revisionNumber: 0,
+    approvedAt: approved.approvedAt!,
+    changeSummary: null,
+    pm: approved,
+  }];
+  analysis.pm = {
+    ...approved,
+    status: "draft",
+    approvedAt: undefined,
+    revisionNumber: undefined,
+    baseRevisionNumber: 0,
+    changeSummary: "Unapproved changes",
+    title: "Edited synthetic draft",
+  };
+  analysis.pmVersions = history;
+
+  const next = discardPmDraft(analysis, analysis.pm.id, "2026-10-31T12:00:00.000Z");
+
+  assert.equal(next.pm?.status, "approved");
+  assert.equal(next.pm?.title, "Approved synthetic PM");
+  assert.equal(next.pm?.revisionNumber, 0);
+  assert.deepEqual(next.pmVersions, history);
+});
+
+test("deleting a primary initial draft promotes another saved PM plan", () => {
+  const analysis = createAnalysis();
+  const first = { ...createEmptyPm(analysis), id: "pm-first" };
+  const second = { ...createEmptyPm(analysis), id: "pm-second", title: "Remaining PM" };
+  analysis.pm = first;
+  analysis.additionalPms = [{ pm: second, pmVersions: [] }];
+
+  const next = discardPmDraft(analysis, first.id, "2026-10-31T12:00:00.000Z");
+
+  assert.equal(next.pm?.id, second.id);
+  assert.deepEqual(next.additionalPms, []);
+});
+
+test("approved PMs cannot be deleted as drafts", () => {
+  const analysis = createAnalysis();
+  const pm = { ...createEmptyPm(analysis), status: "approved" as const };
+  analysis.pm = pm;
+  assert.throws(() => discardPmDraft(analysis, pm.id), /Only a saved PM draft can be deleted/);
+});
 
 test("PM split keeps citations with their matching task steps", () => {
   const analysis = createAnalysis();

@@ -11,7 +11,7 @@
     "dev:web": "vite --host 0.0.0.0 --port 4173",
     "prebuild": "node scripts/copy-manual-processing-assets.mjs",
     "build": "tsc -b && tsc -p tsconfig.server.build.json && vite build",
-    "test:server-validation": "node --import tsx --test server/save-validation.test.ts server/pm-canonical.test.ts",
+    "test:server-validation": "node --import tsx --test server/save-validation.test.ts server/pm-canonical.test.ts server/pm-draft-deletion.test.ts",
     "test:server-manual": "node --import tsx --test server/manual-validation.test.ts",
     "test:domain": "node --import tsx --test src/domain/planner.test.ts",
     "test:e2e": "playwright test",

@@ -38,6 +38,7 @@ Date: 2026-10-31.
 - Issue [06-field-level-pm-evidence-citations](issues/06-field-level-pm-evidence-citations.md) is resolved. Local automated tests and authenticated synthetic `plannermc-dev` QA verified citation authoring, persistence/read-back, step remapping, approval, and retained snapshots. A JSONB key-order false negative in the server comparator was corrected and regression-tested. One explicitly labeled QA analysis remains in development; production and CMMS were untouched.
 - Refreshed [`replica/parity.md`](../../replica/parity.md) and `replica/diffs/plannermc-scope.csv` after issue 06. Score remains 66.7/100 against PlannerMC MVP must-haves because source provenance is still partial while external-source citations are deferred. This is not vendor-product parity.
 - Ran the local `replica-diff` parity script against the PlannerMC-only matrix at `replica/diffs/plannermc-scope.csv`. Four of nine must-haves are complete; five remain incomplete. No original workflow captures exist for layout or behavior comparison.
+- Resolved [07-pm-draft-deletion](issues/07-pm-draft-deletion.md). Initial drafts can be deleted while preserving the analysis and evidence; revision drafts restore the approved snapshot and retain history. Local Chromium and authenticated synthetic `plannermc-dev` QA passed, including retry, stale-version conflict, and rejection of an approved PM without a draft. Production remained untouched; limits are recorded in the issue and test plan.
 
 ## Fog
 
@@ -47,4 +48,4 @@ Date: 2026-10-31.
 
 ## Next flow step
 
-Issue 06 is resolved and the `/replica-diff` ranking is refreshed: 66.7/100, four of nine must-haves complete. The next workflow step is `/replica-build` to select an unblocked remaining gap. Language/provider decisions and the operational catalog source remain dependencies.
+Issue 07 is resolved. The next flow step is `/replica-diff` to refresh the must-have ranking and select the next unblocked vertical slice. The last recorded PlannerMC-only score is 66.7/100, four of nine must-haves complete; deleting PM drafts was already within the implemented review lifecycle row and did not change that score. It is not vendor-product parity.

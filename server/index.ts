@@ -7,6 +7,7 @@ import { Pool, type PoolClient } from "pg";
 import { getDocument as getPdfDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AdditionalPmPlan, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../src/domain/planner.js";
 import { canonicalFieldEvidence } from "./pm-canonical.js";
+import { parsePmDraftDeletionRequest, planPmDraftDeletion } from "./pm-draft-deletion.js";
 import { assertApplicableManualCitations, assertReviewedManualReferences, parseSaveBody, type SaveBody } from "./save-validation.js";
 import { MANUAL_CONTENT_TYPES, parseManualUploadDescriptor, readManualUploadConfig, verifyPdfPageCount, type ManualExtractionMethod, type ManualLocatorRange, type ManualUploadDescriptor } from "./manual-validation.js";
 
@@ -969,6 +970,295 @@ function samePmHistory(expected: PmVersionHistoryEntry[], actual: PmVersionHisto
   });
 }
 
+function pmRecords(analysis: PlannerAnalysis): AdditionalPmPlan[] {
+  return [
+    ...(analysis.pm ? [{ pm: analysis.pm, pmVersions: analysis.pmVersions ?? [] }] : []),
+    ...(analysis.additionalPms ?? []),
+  ];
+}
+
+function sameIds(expected: string[], actual: string[]): boolean {
+  const sortedActual = [...actual].sort();
+  return expected.length === sortedActual.length && [...expected].sort().every((id, index) => id === sortedActual[index]);
+}
+
+function pmHistoryDigest(history: PmVersionHistoryEntry[]): string {
+  return digest(history.map((version) => ({
+    id: version.id,
+    revisionNumber: version.revisionNumber,
+    approvedAt: version.approvedAt,
+    changeSummary: version.changeSummary,
+    pm: canonicalPm(version.pm),
+  })));
+}
+
+type PmDraftDeletionReceiptSummary = {
+  analysisId: string;
+  pmId: string;
+  rowVersion: number;
+  removedInitialDraft: boolean;
+  approvedVersionIds: string[];
+  approvedHistoryDigest: string;
+  assetIds: string[];
+  sourceIds: string[];
+  documentIds: string[];
+};
+
+function parsePmDraftDeletionReceiptSummary(value: unknown): PmDraftDeletionReceiptSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const summary = value as Record<string, unknown>;
+  const stringArray = (entry: unknown) => Array.isArray(entry) && entry.every((item) => typeof item === "string");
+  if (typeof summary.analysisId !== "string" || typeof summary.pmId !== "string" ||
+      !Number.isSafeInteger(summary.rowVersion) || Number(summary.rowVersion) < 1 ||
+      typeof summary.removedInitialDraft !== "boolean" || typeof summary.approvedHistoryDigest !== "string" ||
+      !stringArray(summary.approvedVersionIds) || !stringArray(summary.assetIds) ||
+      !stringArray(summary.sourceIds) || !stringArray(summary.documentIds)) return null;
+  return summary as PmDraftDeletionReceiptSummary;
+}
+
+async function readPmPreservedIds(client: PoolClient, owner: Principal, analysisId: string) {
+  const [assets, sources, documents] = await Promise.all([
+    client.query<{ id: string }>(
+      "SELECT id FROM public.assets WHERE analysis_id = $1 AND owner_id = $2 AND workspace_id = $3 ORDER BY id",
+      [analysisId, owner.userId, owner.workspaceId],
+    ),
+    client.query<{ id: string }>(
+      "SELECT id FROM public.sources WHERE analysis_id = $1 AND owner_id = $2 AND workspace_id = $3 ORDER BY id",
+      [analysisId, owner.userId, owner.workspaceId],
+    ),
+    client.query<{ id: string }>(
+      `SELECT id FROM public.original_documents
+        WHERE analysis_id = $1 AND owner_id = $2 AND workspace_id = $3 ORDER BY id`,
+      [analysisId, owner.userId, owner.workspaceId],
+    ),
+  ]);
+  return {
+    assetIds: assets.rows.map((row) => row.id),
+    sourceIds: sources.rows.map((row) => row.id),
+    documentIds: documents.rows.map((row) => row.id),
+  };
+}
+
+async function deletePmDraft(owner: Principal, analysisId: string, pmId: string, request: ReturnType<typeof parsePmDraftDeletionRequest>) {
+  const client = await pool.connect();
+  const requestDigest = digest({ analysisId, pmId, expectedRowVersion: request.expectedRowVersion });
+  let approvedHistoryBefore: PmVersionHistoryEntry[] = [];
+  let expectedPreserved: Awaited<ReturnType<typeof readPmPreservedIds>> | null = null;
+  let shouldRemovePm = false;
+  let expectedRowVersion = request.expectedRowVersion;
+  let wasReplay = false;
+  let needsReceiptCompletion = false;
+  let approvedHistoryDigestExpected = digest([]);
+  let approvedVersionIdsExpected: string[] = [];
+  try {
+    await client.query("BEGIN");
+    const analysis = await client.query<{ row_version: number }>(
+      `SELECT row_version FROM public.analyses
+        WHERE id = $1 AND owner_id = $2 AND workspace_id = $3 FOR UPDATE`,
+      [analysisId, owner.userId, owner.workspaceId],
+    );
+    if (!analysis.rows[0]) throw Object.assign(new Error("This analysis is not available in the current workspace."), { statusCode: 404 });
+
+    const priorOperation = await client.query<{
+      request_digest: string; resource_kind: string; resource_id: string | null;
+      outcome: "completed" | "resultUnverified"; result_summary: unknown;
+    }>(
+      `SELECT request_digest, resource_kind, resource_id, outcome, result_summary FROM public.operation_receipts
+        WHERE owner_id = $1 AND workspace_id = $2 AND operation_id = $3 FOR UPDATE`,
+      [owner.userId, owner.workspaceId, request.operationId],
+    );
+    if (priorOperation.rows[0]) {
+      const prior = priorOperation.rows[0];
+      if (prior.request_digest !== requestDigest || prior.resource_kind !== "pmDraftDeletion" || prior.resource_id !== pmId) {
+        throw Object.assign(new Error("This operation ID was already used for a different PlannerMC change."), { statusCode: 409 });
+      }
+      wasReplay = true;
+      if (prior.outcome === "resultUnverified") {
+        const receipt = parsePmDraftDeletionReceiptSummary(prior.result_summary);
+        if (!receipt || receipt.analysisId !== analysisId || receipt.pmId !== pmId) {
+          throw Object.assign(new Error("The earlier PM draft deletion could not be verified. Reload the analysis before continuing."), { statusCode: 503 });
+        }
+        needsReceiptCompletion = true;
+        shouldRemovePm = receipt.removedInitialDraft;
+        expectedRowVersion = receipt.rowVersion;
+        approvedVersionIdsExpected = receipt.approvedVersionIds;
+        approvedHistoryDigestExpected = receipt.approvedHistoryDigest;
+        expectedPreserved = {
+          assetIds: receipt.assetIds,
+          sourceIds: receipt.sourceIds,
+          documentIds: receipt.documentIds,
+        };
+      }
+      await client.query("COMMIT");
+    } else {
+      if (analysis.rows[0].row_version !== request.expectedRowVersion) {
+        throw Object.assign(new Error("This analysis changed in another tab or session. Reload it and review the saved version before deleting the draft."), { statusCode: 409 });
+      }
+
+      const target = await client.query<{ current_approved_version_id: string | null }>(
+        `SELECT p.current_approved_version_id
+           FROM public.pms p
+           JOIN public.assets a ON a.id = p.asset_id
+          WHERE p.id = $1 AND a.analysis_id = $2
+            AND p.owner_id = $3 AND p.workspace_id = $4
+            AND a.owner_id = $3 AND a.workspace_id = $4
+          FOR UPDATE OF p`,
+        [pmId, analysisId, owner.userId, owner.workspaceId],
+      );
+      if (!target.rows[0]) throw Object.assign(new Error("This PM is not available in the current analysis."), { statusCode: 404 });
+
+      const draftResult = await client.query<{ id: string }>(
+        `SELECT id FROM public.pm_versions
+          WHERE pm_id = $1 AND owner_id = $2 AND workspace_id = $3 AND status = 'draft'
+          FOR UPDATE`,
+        [pmId, owner.userId, owner.workspaceId],
+      );
+      const approvedRefs = await client.query<{ id: string; revision_number: number }>(
+        `SELECT id, revision_number FROM public.pm_versions
+          WHERE pm_id = $1 AND owner_id = $2 AND workspace_id = $3 AND status = 'confirmedApproved'
+          ORDER BY revision_number FOR UPDATE`,
+        [pmId, owner.userId, owner.workspaceId],
+      );
+      const deletionPlan = planPmDraftDeletion({
+        draftVersionId: draftResult.rows[0]?.id ?? null,
+        currentApprovedVersionId: target.rows[0].current_approved_version_id,
+        approvedVersions: approvedRefs.rows.map((version) => ({ id: version.id, revisionNumber: version.revision_number })),
+      });
+      approvedHistoryBefore = deletionPlan.approvedVersionIds.length ? await readPmHistory(client, owner, pmId) : [];
+      shouldRemovePm = deletionPlan.deletePmRecord;
+      approvedVersionIdsExpected = deletionPlan.approvedVersionIds;
+      approvedHistoryDigestExpected = pmHistoryDigest(approvedHistoryBefore);
+      expectedPreserved = await readPmPreservedIds(client, owner, analysisId);
+
+      const draftDelete = await client.query(
+        `DELETE FROM public.pm_versions
+          WHERE id = $1 AND pm_id = $2 AND owner_id = $3 AND workspace_id = $4 AND status = 'draft'
+          RETURNING id`,
+        [draftResult.rows[0].id, pmId, owner.userId, owner.workspaceId],
+      );
+      if (!draftDelete.rowCount) throw Object.assign(new Error("The PM draft changed while you were deleting it. Reload and review the current version."), { statusCode: 409 });
+
+      if (shouldRemovePm) {
+        const pmDelete = await client.query(
+          `DELETE FROM public.pms
+            WHERE id = $1 AND owner_id = $2 AND workspace_id = $3 AND current_approved_version_id IS NULL
+            RETURNING id`,
+          [pmId, owner.userId, owner.workspaceId],
+        );
+        if (!pmDelete.rowCount) throw Object.assign(new Error("The PM now has approved history and cannot be removed as an initial draft."), { statusCode: 409 });
+      }
+
+      const remaining = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM public.pms p JOIN public.assets a ON a.id = p.asset_id
+          WHERE a.analysis_id = $1 AND p.owner_id = $2 AND p.workspace_id = $3`,
+        [analysisId, owner.userId, owner.workspaceId],
+      );
+      const nextStage = Number(remaining.rows[0]?.count ?? 0) > 0 ? "pmReview" : "assetsReview";
+      const updated = await client.query<{ row_version: number }>(
+        `UPDATE public.analyses SET processing_stage = $1, row_version = row_version + 1, updated_at = now()
+          WHERE id = $2 AND owner_id = $3 AND workspace_id = $4 AND row_version = $5
+          RETURNING row_version`,
+        [nextStage, analysisId, owner.userId, owner.workspaceId, request.expectedRowVersion],
+      );
+      if (!updated.rows[0]) throw Object.assign(new Error("This analysis changed while you were deleting the draft. Reload and review the current version."), { statusCode: 409 });
+      expectedRowVersion = updated.rows[0].row_version;
+
+      const resultSummary = {
+        analysisId,
+        pmId,
+        rowVersion: expectedRowVersion,
+        removedInitialDraft: shouldRemovePm,
+        approvedVersionIds: approvedVersionIdsExpected,
+        approvedHistoryDigest: approvedHistoryDigestExpected,
+        assetIds: expectedPreserved.assetIds,
+        sourceIds: expectedPreserved.sourceIds,
+        documentIds: expectedPreserved.documentIds,
+      };
+      await client.query(
+        `INSERT INTO public.operation_receipts
+          (owner_id, workspace_id, operation_id, request_digest, result_digest,
+           resource_kind, resource_id, outcome, result_summary)
+         VALUES ($1,$2,$3,$4,$5,'pmDraftDeletion',$6,'resultUnverified',$7::jsonb)`,
+        [owner.userId, owner.workspaceId, request.operationId, requestDigest,
+          null, pmId, JSON.stringify(resultSummary)],
+      );
+      await client.query("COMMIT");
+    }
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const readBack = await loadAnalysis(owner, analysisId);
+  const workspace = await loadWorkspace(owner, analysisId);
+  if (!readBack) throw Object.assign(new Error("The PM draft deletion committed, but the analysis could not be read back. The result is unverified."), { statusCode: 503 });
+  const savedPm = pmRecords(readBack).find((record) => record.pm.id === pmId);
+  if (!wasReplay || needsReceiptCompletion) {
+    const pmMatches = shouldRemovePm
+      ? !savedPm
+      : Boolean(savedPm?.pm.status === "approved" && (needsReceiptCompletion
+        ? pmHistoryDigest(savedPm.pmVersions) === approvedHistoryDigestExpected
+        : samePmHistory(approvedHistoryBefore, savedPm.pmVersions)));
+    const actualAssetIds = readBack.assets.map((asset) => asset.id);
+    const actualSourceIds = [
+        ...(readBack.plannerEvidence ? [readBack.plannerEvidence.id] : []),
+        ...readBack.manualDocuments.map((manual) => manual.id),
+      ];
+    const actualDocumentIds = readBack.manualDocuments.map((manual) => manual.documentId);
+    const idsMatch = (expected: string[], actual: string[]) => needsReceiptCompletion
+      ? expected.every((id) => actual.includes(id))
+      : sameIds(expected, actual);
+    const preserved = expectedPreserved &&
+      idsMatch(expectedPreserved.assetIds, actualAssetIds) &&
+      idsMatch(expectedPreserved.sourceIds, actualSourceIds) &&
+      idsMatch(expectedPreserved.documentIds, actualDocumentIds);
+    const versionMatches = needsReceiptCompletion
+      ? readBack.rowVersion >= expectedRowVersion
+      : readBack.rowVersion === expectedRowVersion;
+    const historyIdsMatch = needsReceiptCompletion
+      ? approvedVersionIdsExpected.every((id) => savedPm?.pmVersions.some((version) => version.id === id))
+      : true;
+    if (!versionMatches || !pmMatches || !preserved || !historyIdsMatch ||
+        (pmRecords(readBack).length === 0 && readBack.stage !== 2)) {
+      throw Object.assign(new Error("The PM draft deletion committed, but its result or preserved records could not be verified by read-back."), { statusCode: 503 });
+    }
+  }
+  if (!wasReplay || needsReceiptCompletion) {
+    const summary = {
+      analysisId,
+      pmId,
+      rowVersion: expectedRowVersion,
+      removedInitialDraft: shouldRemovePm,
+      approvedVersionIds: approvedVersionIdsExpected,
+      approvedHistoryDigest: approvedHistoryDigestExpected,
+      assetIds: expectedPreserved?.assetIds ?? [],
+      sourceIds: expectedPreserved?.sourceIds ?? [],
+      documentIds: expectedPreserved?.documentIds ?? [],
+    };
+    const completed = await pool.query(
+      `UPDATE public.operation_receipts SET outcome = 'completed', result_digest = $4
+        WHERE owner_id = $1 AND workspace_id = $2 AND operation_id = $3 AND resource_kind = 'pmDraftDeletion'
+          AND resource_id = $5 AND outcome = 'resultUnverified'`,
+      [owner.userId, owner.workspaceId, request.operationId, digest(summary), pmId],
+    );
+    if (!completed.rowCount) {
+      const existing = await pool.query<{ outcome: string; result_digest: string | null }>(
+        `SELECT outcome, result_digest FROM public.operation_receipts
+          WHERE owner_id = $1 AND workspace_id = $2 AND operation_id = $3 AND resource_kind = 'pmDraftDeletion'
+            AND resource_id = $4`,
+        [owner.userId, owner.workspaceId, request.operationId, pmId],
+      );
+      if (existing.rows[0]?.outcome !== "completed" || existing.rows[0]?.result_digest !== digest(summary)) {
+        throw Object.assign(new Error("The PM draft deletion was read back, but its operation receipt could not be marked verified."), { statusCode: 503 });
+      }
+    }
+  }
+  return workspace;
+}
+
 type ManualDatabaseRecord = {
   source_id: string;
   document_id: string;
@@ -1281,6 +1571,19 @@ app.put<{ Params: { id: string } }>("/api/analyses/:id", { preHandler: authentic
     const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 500;
     request.log.error({ err: error }, "Planner analysis save failed");
     return reply.code(statusCode).send({ message: error instanceof Error ? error.message : "The analysis could not be saved." });
+  }
+});
+app.delete<{ Params: { analysisId: string; pmId: string } }>("/api/analyses/:analysisId/pms/:pmId/draft", { preHandler: authenticate }, async (request, reply) => {
+  try {
+    if (!uuidPattern.test(request.params.analysisId) || !uuidPattern.test(request.params.pmId)) {
+      return reply.code(400).send({ message: "The analysis or PM ID is invalid." });
+    }
+    const deletionRequest = parsePmDraftDeletionRequest(request.body);
+    return await deletePmDraft(principal(request), request.params.analysisId, request.params.pmId, deletionRequest);
+  } catch (error) {
+    const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 500;
+    request.log.error({ err: error }, "Planner PM draft deletion failed");
+    return reply.code(statusCode).send({ message: error instanceof Error ? error.message : "The PM draft could not be deleted." });
   }
 });
 

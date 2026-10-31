@@ -35,6 +35,16 @@ export class HttpPlannerStore implements PlannerDataStore {
     });
   }
 
+  async deletePmDraft(analysisId: string, pmId: string, expectedRowVersion: number, operationId: string): Promise<WorkspaceSnapshot> {
+    return this.request<SnapshotResponse>(
+      `/api/analyses/${encodeURIComponent(analysisId)}/pms/${encodeURIComponent(pmId)}/draft`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ operationId, expectedRowVersion }),
+      },
+    );
+  }
+
   async getManualIntakeConfig(): Promise<ManualIntakeConfig> {
     return this.request<ManualIntakeConfig>("/api/manual-intake/config");
   }
