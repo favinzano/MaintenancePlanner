@@ -4,11 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/copy-manual-processing-assets.mjs",
+    "predev:web": "node scripts/copy-manual-processing-assets.mjs",
     "dev": "concurrently -n api,web \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch server/index.ts",
     "dev:web": "vite --host 0.0.0.0 --port 4173",
+    "prebuild": "node scripts/copy-manual-processing-assets.mjs",
     "build": "tsc -b && tsc -p tsconfig.server.build.json && vite build",
     "test:server-validation": "node --import tsx --test server/save-validation.test.ts",
+    "test:server-manual": "node --import tsx --test server/manual-validation.test.ts",
     "test:e2e": "playwright test",
     "start": "node dist-server/server/index.js",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
@@ -20,12 +24,17 @@
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
     "@supabase/supabase-js": "^2.118.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/spa": "^1.0.0",
     "fastify": "^5.12.7",
     "geist": "^1.4.2",
     "lucide-react": "^0.468.0",
+    "mammoth": "^1.13.0",
+    "pdfjs-dist": "^6.4.299",
     "pg": "^8.23.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { PlannerAnalysis, PmDraft } from "../src/domain/planner.js";
 import { PLANNER_EVIDENCE_BASE_LIMITATION } from "../src/domain/planner.js";
-import { parseSaveBody } from "./save-validation.js";
+import { assertReviewedManualReferences, parseSaveBody } from "./save-validation.js";
 
 const ids = {
   operation: "11111111-1111-4111-8111-111111111111",
@@ -13,7 +13,29 @@ const ids = {
   asset: "66666666-6666-4666-8666-666666666666",
   pm: "77777777-7777-4777-8777-777777777777",
   otherSource: "88888888-8888-4888-8888-888888888888",
+  manualSource: "99999999-9999-4999-8999-999999999999",
+  manualDocument: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 };
+
+function validManual() {
+  return {
+    id: ids.manualSource,
+    documentId: ids.manualDocument,
+    kind: "manual" as const,
+    title: "QA manual",
+    fileName: "qa-synthetic.pdf",
+    contentType: "application/pdf",
+    byteSize: 629,
+    sha256: "a".repeat(64),
+    pageCount: 1,
+    extractionMethod: "pdf-text" as const,
+    locatorRange: { kind: "page" as const, first: 1, last: 1 },
+    applicability: "applicable" as const,
+    applicabilityDetails: "Synthetic QA only.",
+    limitations: ["Synthetic content."],
+    reviewedAt: "2026-10-31T12:00:00.000Z",
+  };
+}
 
 function validBody() {
   const pm: PmDraft = {
@@ -51,6 +73,7 @@ function validBody() {
       limitations: [PLANNER_EVIDENCE_BASE_LIMITATION],
       reviewedAt: "2026-10-31T12:00:00.000Z",
     },
+    manualDocuments: [],
     evidenceDecision: "continue_with_limitations",
     assets: [{ id: ids.asset, kind: "equipment", name: "Synthetic QA equipment", sourceTerm: "", confirmed: true }],
     pm,
@@ -66,6 +89,26 @@ test("accepts a PM reference to the reviewed source on its analysis", () => {
   assert.deepEqual(parsed.analysis.pm?.evidenceSourceIds, [ids.source]);
 });
 
+test("accepts a PM reference to a reviewed manual attached to the same analysis", () => {
+  const body = validBody();
+  body.analysis.manualDocuments = [validManual()];
+  body.analysis.pm!.evidenceSourceIds = [ids.manualSource];
+  assert.deepEqual(parseSaveBody(body).analysis.pm?.evidenceSourceIds, [ids.manualSource]);
+});
+
+test("rejects a PM reference to a manual that is not attached to the analysis", () => {
+  const body = validBody();
+  body.analysis.manualDocuments = [validManual()];
+  body.analysis.pm!.evidenceSourceIds = [ids.otherSource];
+  assert.throws(() => parseSaveBody(body), /may reference only a source attached/i);
+});
+
+test("accepts only manual references returned by the reviewed owner-scoped database query", () => {
+  assert.doesNotThrow(() => assertReviewedManualReferences([ids.manualSource], [ids.manualSource]));
+  assert.throws(() => assertReviewedManualReferences([ids.manualSource], []), /review each manual source/i);
+  assert.throws(() => assertReviewedManualReferences([ids.manualSource], [ids.otherSource]), /review each manual source/i);
+});
+
 test("rejects a malformed planner source ID", () => {
   const body = validBody();
   body.analysis.plannerEvidence!.id = "not-a-uuid";
@@ -75,7 +118,7 @@ test("rejects a malformed planner source ID", () => {
 test("rejects a PM reference to a different source", () => {
   const body = validBody();
   body.analysis.pm!.evidenceSourceIds = [ids.otherSource];
-  assert.throws(() => parseSaveBody(body), /may reference only the planner source attached/i);
+  assert.throws(() => parseSaveBody(body), /may reference only a source attached/i);
 });
 
 test("rejects duplicate PM source references", () => {

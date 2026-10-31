@@ -30,6 +30,7 @@ export class LocalPrototypeStore implements PlannerDataStore {
       ...analysis,
       rowVersion: analysis.rowVersion ?? 1,
       plannerEvidence: analysis.plannerEvidence ?? (analysis.plannerNotes?.trim() ? createPlannerEvidence(analysis.id) : null),
+      manualDocuments: analysis.manualDocuments ?? [],
       pm: analysis.pm ? {
         ...analysis.pm,
         id: analysis.pm.id ?? createId(),

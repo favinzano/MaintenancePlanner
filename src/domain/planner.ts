@@ -24,6 +24,58 @@ export type PlannerEvidence = {
   reviewedAt?: string;
 };
 
+export type ManualExtractionMethod = "pdf-text" | "pdf-ocr" | "docx-text" | "image-ocr";
+
+export type ManualLocatorRange = {
+  kind: "page" | "paragraph" | "document";
+  first: number;
+  last: number;
+};
+
+export type ManualEvidence = {
+  id: string;
+  documentId: string;
+  kind: "manual";
+  title: string;
+  fileName: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
+  pageCount: number | null;
+  extractionMethod: ManualExtractionMethod;
+  locatorRange?: ManualLocatorRange;
+  applicability: EvidenceApplicability;
+  applicabilityDetails: string;
+  limitations: string[];
+  reviewedAt?: string;
+};
+
+export type ManualIntakeConfig = {
+  enabled: boolean;
+  maxFileBytes: number | null;
+  maxPdfPages: number | null;
+  maxTotalManualBytes: number | null;
+  acceptedTypes: string[];
+  message: string;
+};
+
+export type ManualTextSegment = {
+  locator: string;
+  text: string;
+  extractionMethod: "pdf-text" | "pdf-ocr" | "docx-text" | "image-ocr";
+};
+
+export type ManualExtraction = {
+  contentType: string;
+  fileName: string;
+  byteSize: number;
+  sha256: string;
+  pageCount: number | null;
+  extractionMethod: ManualExtractionMethod;
+  segments: ManualTextSegment[];
+  limitations: string[];
+};
+
 export type PmDraft = {
   id: string;
   title: string;
@@ -52,6 +104,7 @@ export type PlannerAnalysis = {
   model: string;
   plannerNotes: string;
   plannerEvidence: PlannerEvidence | null;
+  manualDocuments: ManualEvidence[];
   evidenceDecision: "not_decided" | "continue_with_limitations";
   assets: AssetProposal[];
   pm?: PmDraft;
@@ -116,6 +169,7 @@ export function createAnalysis(catalog: CatalogLocation[] = sampleCatalog): Plan
     model: "",
     plannerNotes: "",
     plannerEvidence: createPlannerEvidence(),
+    manualDocuments: [],
     evidenceDecision: "not_decided",
     assets: [],
     stage: 0,
@@ -138,9 +192,10 @@ export function createEmptyPm(analysis: PlannerAnalysis): PmDraft {
     unresolvedSafetyAcknowledged: false,
     taskSteps: [],
     finalVerification: "",
-    evidenceSourceIds: analysis.plannerEvidence?.reviewedAt && analysis.plannerEvidence.applicability === "applicable"
-      ? [analysis.plannerEvidence.id]
-      : [],
+    evidenceSourceIds: [
+      ...(analysis.plannerEvidence?.reviewedAt && analysis.plannerEvidence.applicability === "applicable" ? [analysis.plannerEvidence.id] : []),
+      ...(analysis.manualDocuments ?? []).filter((source) => source.reviewedAt && source.applicability === "applicable").map((source) => source.id),
+    ],
     status: "draft",
     createdAt: new Date().toISOString(),
   };
@@ -199,23 +254,29 @@ export function renderPmText(analysis: PlannerAnalysis, pm: PmDraft, catalog: Ca
   pm.taskSteps.filter((step) => step.trim()).forEach((step, index) => lines.push(`${index + 2}. ${step.trim()}`));
   lines.push(`${pm.taskSteps.filter((step) => step.trim()).length + 2}. Verify and record: ${pm.finalVerification.trim() || "Not provided"}`);
   lines.push("", "Evidence references");
-  const evidence = analysis.plannerEvidence && pm.evidenceSourceIds?.includes(analysis.plannerEvidence.id)
-    ? analysis.plannerEvidence
-    : null;
-  if (!evidence) {
+  const evidence: Array<PlannerEvidence | ManualEvidence> = [
+    ...(analysis.plannerEvidence && pm.evidenceSourceIds?.includes(analysis.plannerEvidence.id) ? [analysis.plannerEvidence] : []),
+    ...(analysis.manualDocuments ?? []).filter((source) => pm.evidenceSourceIds?.includes(source.id)),
+  ];
+  if (evidence.length === 0) {
     lines.push("No source reference attached. Planner review required.");
   } else {
-    const applicability = {
-      applicable: "Applicable to this equipment",
-      different_variant: "Different equipment variant",
-      unknown: "Applicability not established",
-      not_applicable: "Not applicable to this equipment",
-    }[evidence.applicability];
-    lines.push(`- ${evidence.title.trim() || "Planner-provided information"}`);
-    lines.push(`  Reference: ${evidence.locator.trim() || "Planner notes"}`);
-    lines.push(`  Applicability: ${applicability}`);
-    if (evidence.applicabilityDetails.trim()) lines.push(`  Applicability details: ${evidence.applicabilityDetails.trim()}`);
-    evidence.limitations.filter((limitation) => limitation.trim()).forEach((limitation) => lines.push(`  Limitation: ${limitation.trim()}`));
+    for (const source of evidence) {
+      const applicability = {
+        applicable: "Applicable to this equipment",
+        different_variant: "Different equipment variant",
+        unknown: "Applicability not established",
+        not_applicable: "Not applicable to this equipment",
+      }[source.applicability];
+      const locator = source.kind === "manual"
+        ? `${source.fileName}${source.pageCount ? ` · ${source.pageCount} pages` : ""} · ${source.extractionMethod}`
+        : source.locator;
+      lines.push(`- ${source.title.trim() || (source.kind === "manual" ? source.fileName : "Planner-provided information")}`);
+      lines.push(`  Reference: ${locator.trim() || "Planner notes"}`);
+      lines.push(`  Applicability: ${applicability}`);
+      if (source.applicabilityDetails.trim()) lines.push(`  Applicability details: ${source.applicabilityDetails.trim()}`);
+      source.limitations.filter((limitation) => limitation.trim()).forEach((limitation) => lines.push(`  Limitation: ${limitation.trim()}`));
+    }
   }
   return lines.join("\n");
 }

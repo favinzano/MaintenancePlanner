@@ -46,6 +46,42 @@ The required intake fields block an empty submission, and the approval guard rej
 
 ## To check
 
+### QA-05: Manual intake responsive E2E case not run
+
+- Severity: untriaged; verification gap, not a reproduced product bug
+- Flow / case: F02-E2
+- Screen: Evidence / Manual documents
+- Build: dirty `main` worktree  Browser / device: Playwright runner in the restricted local environment
+
+Steps
+1. Run the manual intake layout test at 390×844 and 1440×1000 CSS px.
+
+Expected: The Evidence screen has no horizontal overflow and no axe violations at either size.
+
+Actual: The test file was added, but the local Playwright runner has no installed browser. `npx playwright install chromium` could not resolve `cdn.playwright.dev` (`ENOTFOUND`), so the responsive E2E result is unknown.
+
+Evidence: `e2e/manual-intake-layout.spec.ts`; local install attempt dated 2026-10-31.
+
+Status: Run when a Playwright browser is available. No UI defect has been reproduced.
+
+### QA-06: Actual local file-picker path not exercised
+
+- Severity: untriaged; verification gap, not a reproduced product bug
+- Flow / case: F02-N1
+- Screen: Evidence / Manual documents
+- Build: dirty `main` worktree  Browser / device: Chrome, authenticated development session
+
+Steps
+1. Select an actual local PDF, DOCX, JPG, or PNG through the application's file input.
+
+Expected: The browser extracts the file locally and offers the requested original for authenticated save when limits are enabled.
+
+Actual: The browser extension denied local-file access during this session. A synthetic QA PDF generated in the app was used to exercise extraction, database save/read-back, reload, retrieval, and review instead.
+
+Evidence: Authenticated browser QA and the `plannermc-dev` synthetic record documented in `replica/build-log.md`.
+
+Status: Verify with a real file picker after configured development limits are re-enabled for controlled QA.
+
 ### QA-01: Empty analyses are persisted before intake details
 
 - Severity: untriaged; not classified as a bug yet

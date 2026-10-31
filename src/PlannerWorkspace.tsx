@@ -9,11 +9,15 @@ import {
   ChevronRight,
   Clipboard,
   ClipboardCheck,
+  Download,
+  Eye,
   FileCheck2,
+  FileUp,
   FileText,
   FolderTree,
   ListChecks,
   LogOut,
+  Loader2,
   Plus,
   Save,
   ShieldAlert,
@@ -36,6 +40,9 @@ import {
   type AssetProposal,
   type CatalogLocation,
   type EvidenceApplicability,
+  type ManualEvidence,
+  type ManualExtraction,
+  type ManualIntakeConfig,
   type OperatingState,
   type PlannerAnalysis,
   type PlannerEvidence,
@@ -47,6 +54,14 @@ import { backendMode, supabaseClient } from "./data/supabase-client";
 
 const logoUrl = "https://ops.macrocaplabs.com/macrocap-labs-logo-auth-384-v2.avif";
 const dataStore = backendMode ? httpPlannerStore : plannerStore;
+const disabledManualIntakeConfig: ManualIntakeConfig = {
+  enabled: false,
+  maxFileBytes: null,
+  maxPdfPages: null,
+  maxTotalManualBytes: null,
+  acceptedTypes: ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "image/jpeg", "image/png"],
+  message: "Manual intake requires authenticated Supabase mode and reviewed development limits.",
+};
 
 const flowSteps = [
   { label: "Intake", caption: "Equipment details", icon: Wrench },
@@ -93,6 +108,7 @@ const textAreaClass = "min-h-28 w-full rounded-control border border-border-inpu
 function PlannerWorkspace() {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>({ analyses: [], currentAnalysisId: null, catalog: sampleCatalog });
   const [analysis, setAnalysis] = useState<PlannerAnalysis | null>(null);
+  const [manualIntakeConfig, setManualIntakeConfig] = useState<ManualIntakeConfig>(disabledManualIntakeConfig);
   const [pm, setPm] = useState<PmDraft | null>(null);
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -116,8 +132,12 @@ function PlannerWorkspace() {
       setLoading(true);
       setError("");
       try {
-        const loaded = await dataStore.load();
+        const [loaded, manualConfig] = await Promise.all([
+          dataStore.load(),
+          backendMode ? httpPlannerStore.getManualIntakeConfig() : Promise.resolve(disabledManualIntakeConfig),
+        ]);
         if (!active) return;
+        setManualIntakeConfig(manualConfig);
         setSnapshot(loaded);
         const selected = loaded.analyses.find((item) => item.id === loaded.currentAnalysisId) ?? loaded.analyses[0] ?? null;
         if (selected) {
@@ -160,6 +180,7 @@ function PlannerWorkspace() {
         setSnapshot({ analyses: [], currentAnalysisId: null, catalog: [] });
         setAnalysis(null);
         setPm(null);
+        setManualIntakeConfig(disabledManualIntakeConfig);
         setLoading(false);
       }
     });
@@ -290,6 +311,37 @@ function PlannerWorkspace() {
       setStep(2);
       setParentAcknowledged(false);
     }
+  }
+
+  async function uploadManual(file: File, extraction: ManualExtraction, operationId: string): Promise<ManualEvidence> {
+    if (!backendMode || !analysis) throw new Error("Save originals through an authenticated PlannerMC workspace.");
+    const saved = await httpPlannerStore.uploadManual(analysis.id, file, extraction, operationId);
+    const loaded = await dataStore.load();
+    const selected = loaded.analyses.find((item) => item.id === analysis.id);
+    if (!selected?.manualDocuments.some((item) => item.documentId === saved.documentId)) {
+      throw new Error("The manual was stored, but its workspace read-back could not be verified.");
+    }
+    setSnapshot(loaded);
+    setAnalysis(selected);
+    showNotice("Original manual saved in Supabase PostgreSQL and verified by SHA-256 read-back.");
+    return selected.manualDocuments.find((item) => item.documentId === saved.documentId)!;
+  }
+
+  async function reviewManual(source: ManualEvidence, applicability: EvidenceApplicability, details: string): Promise<ManualEvidence> {
+    const reviewedSource = await httpPlannerStore.reviewManual(source.documentId, applicability, details);
+    const loaded = await dataStore.load();
+    const selected = loaded.analyses.find((item) => item.id === analysis?.id);
+    if (!selected?.manualDocuments.some((item) => item.documentId === source.documentId && item.reviewedAt)) {
+      throw new Error("The manual review was saved, but its workspace read-back could not be verified.");
+    }
+    setSnapshot(loaded);
+    setAnalysis(selected);
+    showNotice("Manual applicability review saved and verified.");
+    return selected.manualDocuments.find((item) => item.documentId === source.documentId) ?? reviewedSource;
+  }
+
+  async function reopenManual(source: ManualEvidence): Promise<File> {
+    return httpPlannerStore.downloadManual(source);
   }
 
   function updateAsset(assetId: string, changes: Partial<AssetProposal>) {
@@ -481,7 +533,7 @@ function PlannerWorkspace() {
 
           <div className="mb-6 flex items-start gap-3 rounded-card border border-ring/30 bg-ring/5 px-4 py-3.5 text-sm">
             <ShieldAlert size={17} className="mt-0.5 shrink-0 text-ring" aria-hidden="true" />
-            <p className="leading-5 text-muted">{backendMode ? <><span className="font-medium text-foreground">Authenticated backend.</span> PlannerMC records are sent to Fastify and saved in Supabase PostgreSQL. This slice does not inspect manuals, generate technical guidance, or connect to a CMMS.</> : <><span className="font-medium text-foreground">Local prototype.</span> This build uses a sample location catalog and saves only in this browser. It does not sign users in, inspect manuals, generate technical guidance, or connect to a CMMS.</>}</p>
+            <p className="leading-5 text-muted">{backendMode ? <><span className="font-medium text-foreground">Authenticated backend.</span> Manual text extraction and OCR run in this browser. When you save an original, PlannerMC stores its bytes in the configured Supabase PostgreSQL database. Extracted text stays in this browser and is not sent to AI, OCR, search, or speech providers.</> : <><span className="font-medium text-foreground">Local prototype.</span> This build uses a sample location catalog and saves only in this browser. Manual upload requires the authenticated Supabase workspace. No AI generation or CMMS writeback is connected.</>}</p>
           </div>
 
           {error && <div role="alert" className="mb-5 flex items-start gap-3 rounded-card border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger"><AlertTriangle size={17} className="mt-0.5 shrink-0" aria-hidden="true" /><p>{error}</p></div>}
@@ -508,7 +560,7 @@ function PlannerWorkspace() {
               </div>
 
               {step === 0 && <IntakeStep analysis={analysis} catalog={snapshot.catalog} readOnly={analysis.stage >= 2} onChange={updateAnalysis} onSubmit={saveIntake} />}
-              {step === 1 && <EvidenceStep analysis={analysis} catalog={snapshot.catalog} readOnly={analysis.stage >= 2 && Boolean(analysis.plannerEvidence?.reviewedAt)} acknowledged={continueWithLimitations} onAcknowledge={setContinueWithLimitations} onUpdateSource={updatePlannerEvidence} onBack={() => changeStep(0)} onContinue={continueFromEvidence} />}
+              {step === 1 && <EvidenceStep analysis={analysis} catalog={snapshot.catalog} manualConfig={manualIntakeConfig} readOnly={analysis.stage >= 2 && Boolean(analysis.plannerEvidence?.reviewedAt)} acknowledged={continueWithLimitations} onAcknowledge={setContinueWithLimitations} onUpdateSource={updatePlannerEvidence} onUploadManual={uploadManual} onReviewManual={reviewManual} onReopenManual={reopenManual} onBack={() => changeStep(0)} onContinue={continueFromEvidence} />}
               {step === 2 && <AssetsStep analysis={analysis} readOnly={analysis.pm?.status === "approved"} onUpdate={updateAsset} onAdd={addSubasset} onRemove={removeAsset} parentAcknowledged={parentAcknowledged} onParentAcknowledged={setParentAcknowledged} onBack={() => changeStep(1)} onContinue={continueFromAssets} />}
               {step === 3 && pm && <PmStep analysis={analysis} pm={pm} setPm={setPm} assets={confirmedAssets} reviewed={reviewed} onReviewed={setReviewed} issues={approvalIssues} catalog={snapshot.catalog} onBack={() => changeStep(2)} onSave={savePmDraft} onApprove={approvePm} onCopy={copyPm} onCopyStep={copyStep} />}
             </>
@@ -692,7 +744,20 @@ function IntakeStep({ analysis, catalog, readOnly, onChange, onSubmit }: { analy
   );
 }
 
-function EvidenceStep({ analysis, catalog, readOnly, acknowledged, onAcknowledge, onUpdateSource, onBack, onContinue }: { analysis: PlannerAnalysis; catalog: CatalogLocation[]; readOnly: boolean; acknowledged: boolean; onAcknowledge: (checked: boolean) => void; onUpdateSource: (evidence: PlannerEvidence) => void; onBack: () => void; onContinue: () => void | Promise<void> }) {
+function EvidenceStep({ analysis, catalog, manualConfig, readOnly, acknowledged, onAcknowledge, onUpdateSource, onUploadManual, onReviewManual, onReopenManual, onBack, onContinue }: {
+  analysis: PlannerAnalysis;
+  catalog: CatalogLocation[];
+  manualConfig: ManualIntakeConfig;
+  readOnly: boolean;
+  acknowledged: boolean;
+  onAcknowledge: (checked: boolean) => void;
+  onUpdateSource: (evidence: PlannerEvidence) => void;
+  onUploadManual: (file: File, extraction: ManualExtraction, operationId: string) => Promise<ManualEvidence>;
+  onReviewManual: (source: ManualEvidence, applicability: EvidenceApplicability, details: string) => Promise<ManualEvidence>;
+  onReopenManual: (source: ManualEvidence) => Promise<File>;
+  onBack: () => void;
+  onContinue: () => void | Promise<void>;
+}) {
   const location = catalog.find((item) => item.id === analysis.locationId);
   const area = location?.areas.find((item) => item.id === analysis.areaId);
   const evidence = analysis.plannerEvidence ?? createPlannerEvidence(analysis.id);
@@ -708,7 +773,7 @@ function EvidenceStep({ analysis, catalog, readOnly, acknowledged, onAcknowledge
   }
   return (
     <section className="rounded-panel border border-border bg-panel p-5 shadow-card sm:p-7">
-      <StepTitle eyebrow="02 · Evidence and decision" title="Review the information and its limits" description="The information below came from the planner. This build has not independently checked it." />
+      <StepTitle eyebrow="02 · Evidence and decision" title="Review the information and its limits" description="Review planner notes and any locally extracted manual text. Extraction helps locate content but does not verify technical instructions or equipment applicability." />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <article className="rounded-card border border-border bg-panel-muted p-4">
           <div className="flex items-center gap-2 text-sm font-semibold"><FileText size={16} className="text-accent" aria-hidden="true" />Planner-provided information</div>
@@ -722,7 +787,7 @@ function EvidenceStep({ analysis, catalog, readOnly, acknowledged, onAcknowledge
         <article className="rounded-card border border-warning/40 bg-warning/5 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-warning"><AlertTriangle size={16} aria-hidden="true" />Limitations for this analysis</div>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-muted">
-            <li>No manual, OEM source, or external reference has been analyzed in this build.</li>
+            <li>External research, technical generation, and speech are not connected.</li>
             <li>Equipment identity, task details, frequency, and safety information are not independently verified.</li>
             <li>Any PM content in the next step must be written and reviewed by the planner.</li>
           </ul>
@@ -744,15 +809,192 @@ function EvidenceStep({ analysis, catalog, readOnly, acknowledged, onAcknowledge
         <p className="mt-3 text-xs text-muted">Current applicability: {applicabilityLabels[evidence.applicability]}</p>
         {evidence.reviewedAt && <p className="mt-2 text-xs text-muted">Last reviewed: {new Date(evidence.reviewedAt).toLocaleString()}</p>}
       </article>
+      <ManualDocumentsPanel documents={analysis.manualDocuments ?? []} config={manualConfig} readOnly={readOnly} onUpload={onUploadManual} onReview={onReviewManual} onReopen={onReopenManual} />
       <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-card border border-border-input bg-panel-muted p-4 text-sm leading-6">
         <input type="checkbox" disabled={readOnly} checked={acknowledged} onChange={(event) => onAcknowledge(event.target.checked)} className="mt-1 h-4 w-4 accent-accent" />
-        <span>I have reviewed these limitations and want to continue using only the planner-provided information.</span>
+        <span>I reviewed the available information and limitations and want to continue. Missing or unreadable manual text is not treated as evidence.</span>
       </label>
       <div className="mt-5 flex flex-wrap justify-between gap-2 border-t border-border pt-5">
         <ActionButton onClick={onBack}><ArrowLeft size={15} aria-hidden="true" />Back to intake</ActionButton>
         <ActionButton type="button" variant="primary" onClick={onContinue} disabled={!acknowledged}>Continue to asset proposal <ArrowRight size={15} aria-hidden="true" /></ActionButton>
       </div>
     </section>
+  );
+}
+
+function ManualDocumentsPanel({ documents, config, readOnly, onUpload, onReview, onReopen }: {
+  documents: ManualEvidence[];
+  config: ManualIntakeConfig;
+  readOnly: boolean;
+  onUpload: (file: File, extraction: ManualExtraction, operationId: string) => Promise<ManualEvidence>;
+  onReview: (source: ManualEvidence, applicability: EvidenceApplicability, details: string) => Promise<ManualEvidence>;
+  onReopen: (source: ManualEvidence) => Promise<File>;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [operationId, setOperationId] = useState("");
+  const [extraction, setExtraction] = useState<ManualExtraction | null>(null);
+  const [activeSource, setActiveSource] = useState<ManualEvidence | null>(null);
+  const [applicability, setApplicability] = useState<EvidenceApplicability>("unknown");
+  const [applicabilityDetails, setApplicabilityDetails] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [message, setMessage] = useState("");
+  const [failure, setFailure] = useState("");
+
+  function clearCurrent() {
+    setFile(null);
+    setExtraction(null);
+    setActiveSource(null);
+    setOperationId("");
+    setProgress("");
+    setMessage("");
+    setFailure("");
+    setApplicability("unknown");
+    setApplicabilityDetails("");
+  }
+
+  async function processFile(nextFile: File, source?: ManualEvidence) {
+    setBusy(true);
+    setFailure("");
+    setMessage("");
+    setProgress("Preparing local extraction");
+    try {
+      const sourceConfig: ManualIntakeConfig = source && !config.enabled
+        ? { ...config, enabled: true, maxFileBytes: source.byteSize, maxPdfPages: source.pageCount ?? 1 }
+        : config;
+      const { extractManualLocally } = await import("./manuals/local-extraction");
+      const result = await extractManualLocally(nextFile, sourceConfig, (nextProgress) => setProgress(nextProgress));
+      if (source && result.sha256 !== source.sha256) throw new Error("The reprocessed file no longer matches its saved SHA-256 digest.");
+      if (source?.locatorRange) {
+        const locatorKind = result.contentType === "application/pdf" || result.contentType.startsWith("image/")
+          ? "page"
+          : result.segments[0]?.locator === "Document text" ? "document" : "paragraph";
+        const locatorCount = result.segments.length;
+        if (source.locatorRange.kind !== locatorKind || source.locatorRange.first !== 1 || source.locatorRange.last !== locatorCount) {
+          throw new Error("The reprocessed manual no longer matches its saved page or section locator range.");
+        }
+      }
+      setFile(nextFile);
+      setOperationId(source ? "" : crypto.randomUUID());
+      setExtraction(result);
+      setActiveSource(source ?? null);
+      setApplicability(source?.applicability ?? "unknown");
+      setApplicabilityDetails(source?.applicabilityDetails ?? "");
+      setMessage(source ? "The saved original was reprocessed locally. Review the text and its limitations below." : "Local extraction is ready. Review the text before saving the original.");
+    } catch (caught) {
+      setFailure(caught instanceof Error ? caught.message : "This manual could not be processed in the browser.");
+    } finally {
+      setBusy(false);
+      setProgress("");
+    }
+  }
+
+  async function chooseFile(event: FormEvent<HTMLInputElement>) {
+    const nextFile = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (nextFile) await processFile(nextFile);
+  }
+
+  async function saveOriginal() {
+    if (!file || !extraction) return;
+    setBusy(true);
+    setFailure("");
+    try {
+      const saved = await onUpload(file, extraction, operationId);
+      setActiveSource(saved);
+      setApplicability(saved.applicability);
+      setApplicabilityDetails(saved.applicabilityDetails);
+      setMessage("The original is saved. Review the extracted text and record its applicability before using it in a PM.");
+    } catch (caught) {
+      setFailure(caught instanceof Error ? caught.message : "The manual could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reviewCurrent() {
+    if (!activeSource) return;
+    setBusy(true);
+    setFailure("");
+    try {
+      const saved = await onReview(activeSource, applicability, applicabilityDetails);
+      setActiveSource(saved);
+      setMessage("Manual applicability review saved. The extracted text remains in this browser session.");
+    } catch (caught) {
+      setFailure(caught instanceof Error ? caught.message : "The manual review could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reopen(source: ManualEvidence) {
+    setBusy(true);
+    setFailure("");
+    try {
+      const savedFile = await onReopen(source);
+      await processFile(savedFile, source);
+    } catch (caught) {
+      setFailure(caught instanceof Error ? caught.message : "The original could not be reopened.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article className="mt-4 rounded-card border border-border bg-panel-muted p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-semibold"><FileUp size={16} className="text-accent" aria-hidden="true" />Manual documents</div>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-muted">PDF, DOCX, JPG/JPEG, and PNG. PDF/DOCX extraction and English/Spanish OCR run locally in this browser. Only the original file is sent to the configured PlannerMC database when you save it; extracted text stays in this browser.</p>
+        </div>
+        {activeSource && <ActionButton type="button" onClick={clearCurrent} disabled={busy || readOnly}>Choose another manual</ActionButton>}
+      </div>
+
+      {!config.enabled && <div className="mt-4 rounded-control border border-warning/40 bg-warning/5 p-3 text-xs leading-5 text-muted"><strong className="text-warning">New uploads are disabled.</strong> {config.message} Previously saved originals can still be reopened and processed locally.</div>}
+      {documents.length > 0 && <ul className="mt-4 space-y-2" aria-label="Saved manuals">
+        {documents.map((source) => <li key={source.documentId} className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-border bg-panel p-3">
+          <div className="min-w-0"><p className="break-all text-sm font-medium">{source.fileName}</p><p className="mt-1 text-xs text-muted">{source.pageCount === null ? "DOCX sections" : `${source.pageCount} page${source.pageCount === 1 ? "" : "s"}`} · {source.extractionMethod} · {(source.byteSize / 1024).toFixed(1)} KB · {source.reviewedAt ? "Reviewed" : "Review needed"}</p></div>
+          <ActionButton type="button" onClick={() => void reopen(source)} disabled={busy}><Eye size={14} aria-hidden="true" />{source.reviewedAt ? "View extracted text" : "Review extracted text"}</ActionButton>
+        </li>)}
+      </ul>}
+
+      {!activeSource && config.enabled && !readOnly && <label className="mt-4 flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-control border border-dashed border-border-input bg-panel px-3 text-sm font-medium hover:bg-panel-raised">
+        <input className="sr-only" type="file" accept=".pdf,.docx,.jpg,.jpeg,.png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/jpeg,image/png" disabled={busy} onChange={chooseFile} />
+        {busy ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <FileUp size={16} aria-hidden="true" />}
+        {busy ? progress || "Processing locally" : "Choose a manual to extract locally"}
+      </label>}
+
+      {busy && progress && <p role="status" className="mt-3 text-xs text-muted">{progress}</p>}
+      {failure && <p role="alert" className="mt-3 rounded-control border border-danger/40 bg-danger/10 p-3 text-sm text-danger">{failure}</p>}
+      {message && <p role="status" className="mt-3 text-xs leading-5 text-muted">{message}</p>}
+
+      {extraction && file && <div className="mt-4 space-y-3 rounded-control border border-border bg-panel p-3 sm:p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="break-all text-sm font-semibold">{file.name}</p><p className="mt-1 text-xs text-muted">{extraction.pageCount === null ? `${extraction.segments.length} text sections` : `${extraction.pageCount} pages`} · {extraction.extractionMethod} · SHA-256 {extraction.sha256.slice(0, 16)}…</p></div>{!activeSource && config.enabled && <ActionButton type="button" variant="primary" onClick={() => void saveOriginal()} disabled={busy}><Download size={14} aria-hidden="true" />Save original</ActionButton>}</div>
+        <div className="rounded-control border border-warning/40 bg-warning/5 p-3">
+          <p className="text-xs font-semibold text-warning">Planner review required</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-5 text-muted">{extraction.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>
+        </div>
+        <details className="rounded-control border border-border bg-panel-muted">
+          <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium">Review extracted text ({extraction.segments.length} sections)</summary>
+          <div className="max-h-[32rem] space-y-3 overflow-y-auto border-t border-border p-3">
+            {extraction.segments.map((segment, index) => <section key={`${segment.locator}-${index}`} className="rounded-control border border-border bg-panel p-3">
+              <div className="flex flex-wrap justify-between gap-2"><h4 className="text-xs font-semibold">{segment.locator}</h4><span className="text-xs text-muted">{segment.extractionMethod}</span></div>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{segment.text || "No text was detected in this section."}</p>
+            </section>)}
+          </div>
+        </details>
+        {activeSource && <div className="space-y-3 border-t border-border pt-4">
+          <p className="text-sm font-semibold">Record applicability for this equipment</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Applicability" htmlFor="manual-applicability"><select id="manual-applicability" disabled={busy || readOnly} className={controlClass} value={applicability} onChange={(event) => setApplicability(event.target.value as EvidenceApplicability)}><option value="unknown">Not established</option><option value="applicable">Applicable to this equipment</option><option value="different_variant">Different equipment variant</option><option value="not_applicable">Not applicable to this equipment</option></select></Field>
+            <Field label="Review note" htmlFor="manual-applicability-details"><textarea id="manual-applicability-details" disabled={busy || readOnly} rows={2} className={textAreaClass} value={applicabilityDetails} onChange={(event) => setApplicabilityDetails(event.target.value)} placeholder="Variant, model, or applicability details" /></Field>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {activeSource.reviewedAt && <span className="text-xs text-muted">Reviewed {new Date(activeSource.reviewedAt).toLocaleString()}</span>}
+            <ActionButton type="button" variant="primary" disabled={busy || readOnly} onClick={() => void reviewCurrent()}>{busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={14} aria-hidden="true" />}{activeSource.reviewedAt ? "Save review" : "Mark reviewed"}</ActionButton>
+          </div>
+        </div>}
+      </div>}
+    </article>
   );
 }
 
@@ -847,7 +1089,7 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
   return (
     <section className="rounded-panel border border-border bg-panel p-5 shadow-card sm:p-7">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
-        <StepTitle eyebrow="04 · PM editor" title="Write and review the maintenance plan" description="Enter PM content in English for CMMS handoff. This prototype does not translate, generate, or validate technical instructions." />
+        <StepTitle eyebrow="04 · PM editor" title="Write and review the maintenance plan" description="Enter PM content in English for CMMS handoff. This build does not translate, generate, or validate technical instructions." />
         <span className={`inline-flex items-center gap-1.5 rounded-pill border px-3 py-1.5 text-xs font-medium ${isApproved ? "border-success/40 bg-success/10 text-success" : "border-warning/40 bg-warning/10 text-warning"}`}>
           {isApproved ? <CheckCircle2 size={14} aria-hidden="true" /> : <FileText size={14} aria-hidden="true" />}{isApproved ? "Approved" : "Draft"}
         </span>
@@ -879,6 +1121,19 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
               {analysis.plannerEvidence.limitations.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-5 text-muted">{analysis.plannerEvidence.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}
               {analysis.plannerEvidence.applicability !== "applicable" && <p className="mt-3 rounded-control border border-warning/40 bg-warning/5 p-3 text-xs leading-5 text-muted">Applicability has not been confirmed for this equipment. Keep that uncertainty visible and review any PM content manually.</p>}
             </> : <p className="mt-2 text-sm leading-6 text-muted">Review and save a source record before attaching it to the PM.</p>}
+            {(analysis.manualDocuments ?? []).filter((source) => source.reviewedAt).map((source) => <div key={source.id} className="mt-4 border-t border-border pt-3">
+              <label className="flex cursor-pointer items-start gap-3 text-sm leading-6">
+                <input type="checkbox" disabled={isApproved} checked={pm.evidenceSourceIds.includes(source.id)} onChange={(event) => change("evidenceSourceIds", event.target.checked ? [...new Set([...pm.evidenceSourceIds, source.id])] : pm.evidenceSourceIds.filter((id) => id !== source.id))} className="mt-1 h-4 w-4 accent-accent" />
+                <span>Include reviewed manual: <strong>{source.fileName}</strong></span>
+              </label>
+              <dl className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                <div><dt className="text-muted">Location</dt><dd className="mt-1">{source.pageCount === null ? "DOCX paragraph or section reference" : `${source.pageCount} page${source.pageCount === 1 ? "" : "s"}`}</dd></div>
+                <div><dt className="text-muted">Extraction method</dt><dd className="mt-1">{source.extractionMethod}</dd></div>
+                <div className="sm:col-span-2"><dt className="text-muted">Applicability</dt><dd className="mt-1">{{ applicable: "Applicable to this equipment", different_variant: "Different equipment variant", unknown: "Not established", not_applicable: "Not applicable to this equipment" }[source.applicability]}{source.applicabilityDetails ? ` · ${source.applicabilityDetails}` : ""}</dd></div>
+              </dl>
+              {source.limitations.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-5 text-muted">{source.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}
+            </div>)}
+            {(analysis.manualDocuments ?? []).some((source) => !source.reviewedAt) && <p className="mt-3 rounded-control border border-warning/40 bg-warning/5 p-3 text-xs leading-5 text-muted">An unreviewed manual source cannot be attached to this PM.</p>}
           </div>
 
           <div className="rounded-card border border-border bg-panel-muted p-4">

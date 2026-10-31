@@ -4,8 +4,10 @@ import { createClient } from "@supabase/supabase-js";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
+import { getDocument as getPdfDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft } from "../src/domain/planner.js";
-import { parseSaveBody, type SaveBody } from "./save-validation.js";
+import { assertReviewedManualReferences, parseSaveBody, type SaveBody } from "./save-validation.js";
+import { MANUAL_CONTENT_TYPES, parseManualUploadDescriptor, readManualUploadConfig, verifyPdfPageCount, type ManualExtractionMethod, type ManualLocatorRange, type ManualUploadDescriptor } from "./manual-validation.js";
 
 type Principal = { userId: string; workspaceId: string };
 
@@ -48,6 +50,9 @@ const pool = new Pool({
 });
 const app = Fastify({ logger: true, bodyLimit: 1_048_576 });
 app.decorateRequest("principal", null);
+// Limits are evaluated once when the API process starts; unset values keep intake closed.
+const manualUploadConfig = readManualUploadConfig(process.env);
+app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_request, body, done) => done(null, body));
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const workflowStages = ["intake", "awaitingReview", "assetsReview", "pmReview"] as const;
@@ -156,6 +161,39 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
     reviewedAt: source.reviewed_at?.toISOString(),
   } : createPlannerEvidence(row.id);
 
+  const manualResult = await pool.query<{
+    source_id: string; document_id: string; title: string; file_name: string; content_type: string;
+    byte_size: string | number; sha256: string; page_count: number | null; extraction_method: ManualExtractionMethod;
+    applicability: EvidenceApplicability; applicability_details: string; limitations: string[]; reviewed_at: Date | null;
+    source_locator: Record<string, unknown> | null;
+  }>(
+    `SELECT s.id AS source_id, d.id AS document_id, s.title, d.file_name, d.content_type,
+            d.byte_size, d.sha256, d.page_count, d.extraction_method, s.applicability,
+            s.applicability_details, s.limitations, s.reviewed_at, s.locator AS source_locator
+       FROM public.sources s
+       JOIN public.original_documents d ON d.source_id = s.id
+      WHERE s.analysis_id = $1 AND s.owner_id = $2 AND s.workspace_id = $3 AND s.kind = 'manual'
+      ORDER BY s.created_at, s.id`,
+    [analysisId, owner.userId, owner.workspaceId],
+  );
+  const manualDocuments = manualResult.rows.map((manual) => ({
+    id: manual.source_id,
+    documentId: manual.document_id,
+    kind: "manual" as const,
+    title: manual.title,
+    fileName: manual.file_name,
+    contentType: manual.content_type,
+    byteSize: Number(manual.byte_size),
+    sha256: manual.sha256,
+    pageCount: manual.page_count,
+    extractionMethod: manual.extraction_method,
+    locatorRange: readManualLocatorRange(manual.source_locator, manual.page_count, manual.content_type),
+    applicability: manual.applicability,
+    applicabilityDetails: manual.applicability_details,
+    limitations: Array.isArray(manual.limitations) ? manual.limitations : [],
+    reviewedAt: manual.reviewed_at?.toISOString(),
+  }));
+
   const pmResult = await pool.query<{ pm_id: string; content: PmDraft | null }>(
     `SELECT p.id AS pm_id, COALESCE(approved.content, draft.content) AS content
        FROM public.pms p
@@ -181,6 +219,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
     model: row.model,
     plannerNotes: row.planner_notes,
     plannerEvidence,
+    manualDocuments,
     evidenceDecision: row.evidence_decision,
     assets,
     pm: pm ? { ...pm, id: pm.id ?? pmResult.rows[0].pm_id, evidenceSourceIds: pm.evidenceSourceIds ?? [] } : undefined,
@@ -352,6 +391,20 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
       );
     }
 
+    const manualReferenceIds = analysis.pm?.evidenceSourceIds.filter((id) => id !== analysis.plannerEvidence?.id) ?? [];
+    if (manualReferenceIds.length) {
+      const referenced = await client.query<{ id: string }>(
+        `SELECT s.id
+           FROM public.sources s
+           JOIN public.original_documents d ON d.source_id = s.id
+          WHERE s.id = ANY($1::uuid[]) AND s.analysis_id = $2
+            AND s.owner_id = $3 AND s.workspace_id = $4
+            AND s.kind = 'manual' AND s.reviewed_at IS NOT NULL`,
+        [manualReferenceIds, analysis.id, owner.userId, owner.workspaceId],
+      );
+      assertReviewedManualReferences(manualReferenceIds, referenced.rows.map((row) => row.id));
+    }
+
     const equipment = analysis.assets.find((asset) => asset.kind === "equipment");
     if (analysis.assets.filter((asset) => asset.kind === "equipment").length > 1) {
       throw Object.assign(new Error("An analysis may contain only one equipment asset."), { statusCode: 422 });
@@ -499,7 +552,296 @@ function canonicalPm(pm: PmDraft) {
   return { ...rest, evidenceSourceIds: pm.evidenceSourceIds ?? [] };
 }
 
+type ManualDatabaseRecord = {
+  source_id: string;
+  document_id: string;
+  analysis_id: string;
+  file_name: string;
+  content_type: string;
+  byte_size: string | number;
+  sha256: string;
+  content: Buffer;
+  page_count: number | null;
+  extraction_method: ManualExtractionMethod;
+  source_locator: Record<string, unknown> | null;
+  title: string;
+  applicability: EvidenceApplicability;
+  applicability_details: string;
+  limitations: string[];
+  reviewed_at: Date | null;
+};
+
+type ManualMetadataRecord = Omit<ManualDatabaseRecord, "analysis_id" | "content">;
+
+function readManualLocatorRange(
+  locator: Record<string, unknown> | null,
+  pageCount: number | null,
+  contentType: string,
+): ManualLocatorRange {
+  const stored = locator?.locatorRange;
+  if (stored && typeof stored === "object" &&
+      "kind" in stored && (stored.kind === "page" || stored.kind === "paragraph" || stored.kind === "document") &&
+      "first" in stored && stored.first === 1 && "last" in stored &&
+      typeof stored.last === "number" && Number.isSafeInteger(stored.last) && stored.last > 0) {
+    return stored as ManualLocatorRange;
+  }
+  return { kind: contentType === MANUAL_CONTENT_TYPES.docx ? "document" : "page", first: 1, last: pageCount ?? 1 };
+}
+
+function toManualEvidence(record: ManualMetadataRecord) {
+  return {
+    id: record.source_id,
+    documentId: record.document_id,
+    kind: "manual" as const,
+    title: record.title,
+    fileName: record.file_name,
+    contentType: record.content_type,
+    byteSize: Number(record.byte_size),
+    sha256: record.sha256,
+    pageCount: record.page_count,
+    extractionMethod: record.extraction_method,
+    locatorRange: readManualLocatorRange(record.source_locator, record.page_count, record.content_type),
+    applicability: record.applicability,
+    applicabilityDetails: record.applicability_details,
+    limitations: Array.isArray(record.limitations) ? record.limitations : [],
+    reviewedAt: record.reviewed_at?.toISOString(),
+  };
+}
+
+async function loadManualRecord(owner: Principal, documentId: string): Promise<ManualDatabaseRecord | null> {
+  const result = await pool.query<ManualDatabaseRecord>(
+    `SELECT s.id AS source_id, d.id AS document_id, d.analysis_id, d.file_name, s.locator AS source_locator,
+            d.content_type, d.byte_size, d.sha256, d.content, d.page_count,
+            d.extraction_method, s.title, s.applicability, s.applicability_details,
+            s.limitations, s.reviewed_at
+       FROM public.original_documents d
+       JOIN public.sources s ON s.id = d.source_id
+      WHERE d.id = $1 AND d.owner_id = $2 AND d.workspace_id = $3 AND s.kind = 'manual'`,
+    [documentId, owner.userId, owner.workspaceId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function loadManualMetadata(owner: Principal, documentId: string): Promise<ManualMetadataRecord | null> {
+  const result = await pool.query<ManualMetadataRecord>(
+    `SELECT s.id AS source_id, d.id AS document_id, d.file_name, d.content_type, s.locator AS source_locator,
+            d.byte_size, d.sha256, d.page_count, d.extraction_method,
+            s.title, s.applicability, s.applicability_details, s.limitations, s.reviewed_at
+       FROM public.original_documents d
+       JOIN public.sources s ON s.id = d.source_id
+      WHERE d.id = $1 AND d.owner_id = $2 AND d.workspace_id = $3 AND s.kind = 'manual'`,
+    [documentId, owner.userId, owner.workspaceId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function getVerifiedPdfPageCount(bytes: Buffer): Promise<number> {
+  const loadingTask = getPdfDocument({
+    data: new Uint8Array(bytes),
+    useSystemFonts: false,
+    disableFontFace: true,
+  });
+  const documentProxy = await loadingTask.promise;
+  try {
+    return documentProxy.numPages;
+  } finally {
+    await loadingTask.destroy();
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function manualLimitations(method: ManualExtractionMethod): string[] {
+  const limitations = ["Extracted content was processed in this browser and is not independently verified."];
+  if (method === "pdf-ocr" || method === "image-ocr") limitations.push("OCR may contain recognition errors. Compare extracted text with the original manual.");
+  if (method === "docx-text") limitations.push("DOCX text extraction does not preserve complex layout or page breaks reliably.");
+  if (method === "pdf-text") limitations.push("Selectable PDF text may omit words embedded only in figures or images.");
+  return limitations;
+}
+
+async function saveManualDocument(owner: Principal, analysisId: string, descriptor: ManualUploadDescriptor, bytes: Buffer) {
+  if (manualUploadConfig.maxTotalManualBytes === null) throw Object.assign(new Error(manualUploadConfig.message), { statusCode: 503 });
+  const client = await pool.connect();
+  const requestDigest = digest({ analysisId, ...descriptor });
+  let documentId = "";
+  let sourceId = "";
+  let isReplay = false;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [741358201]);
+    const priorOperation = await client.query<{ request_digest: string; resource_kind: string; resource_id: string | null }>(
+      `SELECT request_digest, resource_kind, resource_id FROM public.operation_receipts
+        WHERE owner_id = $1 AND workspace_id = $2 AND operation_id = $3 FOR UPDATE`,
+      [owner.userId, owner.workspaceId, descriptor.operationId],
+    );
+    if (priorOperation.rows[0]) {
+      const prior = priorOperation.rows[0];
+      if (prior.request_digest !== requestDigest || prior.resource_kind !== "original_document" || !prior.resource_id) {
+        throw Object.assign(new Error("This operation ID was already used for a different PlannerMC change."), { statusCode: 409 });
+      }
+      documentId = prior.resource_id;
+      isReplay = true;
+      const replay = await client.query<{ id: string }>(
+        `SELECT id FROM public.original_documents WHERE id = $1 AND owner_id = $2 AND workspace_id = $3`,
+        [documentId, owner.userId, owner.workspaceId],
+      );
+      if (!replay.rowCount) throw Object.assign(new Error("The earlier upload could not be verified."), { statusCode: 503 });
+      await client.query("COMMIT");
+    } else {
+      const analysis = await client.query<{ id: string }>(
+        `SELECT id FROM public.analyses WHERE id = $1 AND owner_id = $2 AND workspace_id = $3 FOR UPDATE`,
+        [analysisId, owner.userId, owner.workspaceId],
+      );
+      if (!analysis.rowCount) throw Object.assign(new Error("This analysis is not available in the current workspace."), { statusCode: 404 });
+
+      const usage = await client.query<{ stored_bytes: string }>(
+        `SELECT COALESCE(sum(byte_size), 0)::text AS stored_bytes FROM public.original_documents`,
+      );
+      const existingBytes = Number(usage.rows[0]?.stored_bytes ?? 0);
+      if (existingBytes + descriptor.byteSize > manualUploadConfig.maxTotalManualBytes) {
+        throw Object.assign(new Error(`This upload would exceed the configured ${manualUploadConfig.maxTotalManualBytes}-byte manual storage limit for this database.`), { statusCode: 413 });
+      }
+
+      sourceId = randomUUID();
+      documentId = randomUUID();
+      const locator = {
+        kind: "originalDocument",
+        fileName: descriptor.fileName,
+        pageCount: descriptor.pageCount,
+        extractionMethod: descriptor.extractionMethod,
+        sha256: descriptor.sha256,
+        locatorRange: descriptor.locatorRange,
+      };
+      await client.query(
+        `INSERT INTO public.sources
+          (id, analysis_id, owner_id, workspace_id, kind, title, locator,
+           applicability, applicability_details, limitations, reviewed_at)
+         VALUES ($1,$2,$3,$4,'manual',$5,$6::jsonb,'unknown','',$7::jsonb,NULL)`,
+        [sourceId, analysisId, owner.userId, owner.workspaceId, descriptor.fileName,
+          JSON.stringify(locator), JSON.stringify(manualLimitations(descriptor.extractionMethod))],
+      );
+      await client.query(
+        `INSERT INTO public.original_documents
+          (id, source_id, analysis_id, owner_id, workspace_id, file_name,
+           content_type, byte_size, sha256, content, page_count, extraction_method)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [documentId, sourceId, analysisId, owner.userId, owner.workspaceId,
+          descriptor.fileName, descriptor.contentType, descriptor.byteSize, descriptor.sha256,
+          bytes, descriptor.pageCount, descriptor.extractionMethod],
+      );
+      await client.query(
+        `INSERT INTO public.operation_receipts
+          (owner_id, workspace_id, operation_id, request_digest, result_digest,
+           resource_kind, resource_id, outcome, result_summary)
+         VALUES ($1,$2,$3,$4,$5,'original_document',$6,'completed',$7::jsonb)`,
+        [owner.userId, owner.workspaceId, descriptor.operationId, requestDigest,
+          digest({ sourceId, documentId, sha256: descriptor.sha256 }), documentId,
+          JSON.stringify({ sourceId, documentId, sha256: descriptor.sha256 })],
+      );
+      await client.query("COMMIT");
+    }
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const readBack = await loadManualRecord(owner, documentId);
+  if (!readBack || !readBack.content.equals(bytes) || readBack.sha256 !== descriptor.sha256 ||
+      readBack.content.length !== descriptor.byteSize || readBack.file_name !== descriptor.fileName ||
+      readBack.content_type !== descriptor.contentType || readBack.page_count !== descriptor.pageCount ||
+      readBack.extraction_method !== descriptor.extractionMethod ||
+      JSON.stringify(readManualLocatorRange(readBack.source_locator, readBack.page_count, readBack.content_type)) !== JSON.stringify(descriptor.locatorRange) ||
+      createHash("sha256").update(readBack.content).digest("hex") !== descriptor.sha256) {
+    throw Object.assign(new Error("The manual write completed, but its independent byte and digest read-back did not match. The result is unverified."), { statusCode: 503 });
+  }
+  if (!isReplay && readBack.source_id !== sourceId) {
+    throw Object.assign(new Error("The uploaded file and its evidence record could not be verified together."), { statusCode: 503 });
+  }
+  return toManualEvidence(readBack);
+}
+
 app.get("/api/health", async () => ({ status: "ok" }));
+app.get("/api/manual-intake/config", { preHandler: authenticate }, async () => ({
+  ...manualUploadConfig,
+  acceptedTypes: Object.values(MANUAL_CONTENT_TYPES),
+}));
+
+app.post<{ Params: { id: string }; Body: Buffer }>("/api/analyses/:id/documents", {
+  preHandler: authenticate,
+  bodyLimit: manualUploadConfig.maxFileBytes ?? 1_048_576,
+}, async (request, reply) => {
+  try {
+    if (!uuidPattern.test(request.params.id)) return reply.code(400).send({ message: "The analysis ID is invalid." });
+    if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ message: "Send one manual file as binary content." });
+    const owner = principal(request);
+    const descriptor = parseManualUploadDescriptor(
+      request.headers as Record<string, string | string[] | undefined>,
+      request.body,
+      manualUploadConfig,
+    );
+    if (descriptor.contentType === MANUAL_CONTENT_TYPES.pdf) {
+      const serverPageCount = await getVerifiedPdfPageCount(request.body);
+      verifyPdfPageCount(descriptor.pageCount, serverPageCount, manualUploadConfig);
+    }
+    return await saveManualDocument(owner, request.params.id, descriptor, request.body);
+  } catch (error) {
+    const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 500;
+    request.log.error({ err: error }, "Planner manual upload failed");
+    return reply.code(statusCode).send({ message: error instanceof Error ? error.message : "The manual could not be saved." });
+  }
+});
+
+app.get<{ Params: { id: string } }>("/api/documents/:id", { preHandler: authenticate }, async (request, reply) => {
+  if (!uuidPattern.test(request.params.id)) return reply.code(400).send({ message: "The document ID is invalid." });
+  const record = await loadManualRecord(principal(request), request.params.id);
+  if (!record) return reply.code(404).send({ message: "This manual is not available in the current workspace." });
+  return reply
+    .type(record.content_type)
+    .header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(record.file_name)}`)
+    .header("x-content-type-options", "nosniff")
+    .header("cache-control", "no-store")
+    .send(record.content);
+});
+
+app.patch<{ Params: { id: string } }>("/api/documents/:id/review", { preHandler: authenticate }, async (request, reply) => {
+  try {
+    if (!uuidPattern.test(request.params.id)) return reply.code(400).send({ message: "The document ID is invalid." });
+    if (!isRecord(request.body)) return reply.code(400).send({ message: "The manual review is invalid." });
+    const applicability = request.body.applicability;
+    const applicabilityDetails = request.body.applicabilityDetails;
+    const validApplicability: EvidenceApplicability[] = ["applicable", "different_variant", "unknown", "not_applicable"];
+    if (!validApplicability.includes(applicability as EvidenceApplicability) ||
+        typeof applicabilityDetails !== "string" || applicabilityDetails.length > 4000) {
+      return reply.code(400).send({ message: "Choose a valid applicability and keep its explanation under 4,000 characters." });
+    }
+    const owner = principal(request);
+    const updated = await pool.query(
+      `UPDATE public.sources s
+          SET applicability = $1, applicability_details = $2, reviewed_at = now(), updated_at = now()
+        WHERE s.id = (
+          SELECT d.source_id FROM public.original_documents d
+           WHERE d.id = $3 AND d.owner_id = $4 AND d.workspace_id = $5
+        ) AND s.owner_id = $4 AND s.workspace_id = $5 AND s.kind = 'manual'
+        RETURNING s.id`,
+      [applicability, applicabilityDetails, request.params.id, owner.userId, owner.workspaceId],
+    );
+    if (!updated.rowCount) return reply.code(404).send({ message: "This manual is not available in the current workspace." });
+    const readBack = await loadManualMetadata(owner, request.params.id);
+    if (!readBack || !readBack.reviewed_at || readBack.applicability !== applicability || readBack.applicability_details !== applicabilityDetails) {
+      return reply.code(503).send({ message: "The manual review was saved, but its read-back could not be verified." });
+    }
+    return toManualEvidence(readBack);
+  } catch (error) {
+    const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 500;
+    request.log.error({ err: error }, "Planner manual review failed");
+    return reply.code(statusCode).send({ message: error instanceof Error ? error.message : "The manual review could not be saved." });
+  }
+});
+
 app.get("/api/workspace", { preHandler: authenticate }, async (request) => loadWorkspace(principal(request)));
 app.post("/api/analyses", { preHandler: authenticate }, async (request, reply) => {
   try {

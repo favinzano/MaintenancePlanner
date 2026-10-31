@@ -2,6 +2,14 @@ import { MAX_PM_STEPS, PLANNER_EVIDENCE_BASE_LIMITATION, type EvidenceApplicabil
 
 export type SaveBody = { operationId: string; expectedRowVersion: number; analysis: PlannerAnalysis };
 
+export function assertReviewedManualReferences(referencedIds: readonly string[], verifiedIds: readonly string[]): void {
+  const verified = new Set(verifiedIds);
+  if (verified.size !== verifiedIds.length || referencedIds.length !== verifiedIds.length ||
+      referencedIds.some((id) => !verified.has(id))) {
+    throw Object.assign(new Error("Review each manual source and confirm it belongs to this analysis before attaching it to a PM."), { statusCode: 422 });
+  }
+}
+
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -38,6 +46,17 @@ export function parseSaveBody(body: unknown): SaveBody {
   if (analysis.stage >= 2 && (analysis.evidenceDecision !== "continue_with_limitations" || typeof evidence.reviewedAt !== "string")) {
     throw Object.assign(new Error("The source review decision must be saved before this workflow stage."), { statusCode: 422 });
   }
+  const manualDocuments = Array.isArray(analysis.manualDocuments) ? analysis.manualDocuments : [];
+  for (const manual of manualDocuments) {
+    if (!isRecord(manual) || manual.kind !== "manual" || !uuidPattern.test(String(manual.id)) ||
+        !uuidPattern.test(String(manual.documentId)) || typeof manual.fileName !== "string" ||
+        typeof manual.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(manual.sha256)) {
+      throw Object.assign(new Error("A manual source record is invalid."), { statusCode: 400 });
+    }
+  }
+  if (new Set(manualDocuments.map((manual) => (manual as Record<string, unknown>).id)).size !== manualDocuments.length) {
+    throw Object.assign(new Error("Manual source IDs must be unique within an analysis."), { statusCode: 400 });
+  }
   for (const asset of analysis.assets) {
     if (!isRecord(asset) || !uuidPattern.test(String(asset.id)) ||
         !["equipment", "subasset"].includes(String(asset.kind)) ||
@@ -64,10 +83,11 @@ export function parseSaveBody(body: unknown): SaveBody {
     if (new Set(pm.evidenceSourceIds as string[]).size !== (pm.evidenceSourceIds as string[]).length) {
       throw Object.assign(new Error("PM evidence references must be unique."), { statusCode: 400 });
     }
-    if ((pm.evidenceSourceIds as string[]).some((id) => id !== evidence.id)) {
-      throw Object.assign(new Error("A PM may reference only the planner source attached to this analysis."), { statusCode: 422 });
+    const validSourceIds = new Set([evidence.id, ...manualDocuments.map((manual) => String((manual as Record<string, unknown>).id))]);
+    if ((pm.evidenceSourceIds as string[]).some((id) => !validSourceIds.has(id))) {
+      throw Object.assign(new Error("A PM may reference only a source attached to this analysis."), { statusCode: 422 });
     }
-    if ((pm.evidenceSourceIds as string[]).length && typeof evidence.reviewedAt !== "string") {
+    if ((pm.evidenceSourceIds as string[]).includes(evidence.id) && typeof evidence.reviewedAt !== "string") {
       throw Object.assign(new Error("Review the planner source before attaching it to a PM."), { statusCode: 422 });
     }
     if (analysis.pm.taskSteps.length + 2 > MAX_PM_STEPS) {
