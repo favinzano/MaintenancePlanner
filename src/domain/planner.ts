@@ -104,6 +104,11 @@ export type PmVersionHistoryEntry = {
   pm: PmDraft;
 };
 
+export type AdditionalPmPlan = {
+  pm: PmDraft;
+  pmVersions: PmVersionHistoryEntry[];
+};
+
 export type PlannerAnalysis = {
   id: string;
   rowVersion: number;
@@ -120,6 +125,7 @@ export type PlannerAnalysis = {
   assets: AssetProposal[];
   pm?: PmDraft;
   pmVersions?: PmVersionHistoryEntry[];
+  additionalPms?: AdditionalPmPlan[];
   stage: number;
   createdAt: string;
   updatedAt: string;
@@ -216,6 +222,59 @@ export function createEmptyPm(analysis: PlannerAnalysis): PmDraft {
 
 export function totalPmSteps(pm: PmDraft): number {
   return 2 + pm.taskSteps.length;
+}
+
+export type PmSplitPreview = {
+  firstTaskSteps: string[];
+  secondTaskSteps: string[];
+  issue: string | null;
+};
+
+export function previewPmSplit(pm: PmDraft, splitAfterTaskStep: number, overflowActions: string[]): PmSplitPreview {
+  if (pm.status !== "draft" || pm.baseRevisionNumber !== undefined) {
+    return { firstTaskSteps: [], secondTaskSteps: [], issue: "Only an initial PM draft can be split." };
+  }
+  if (totalPmSteps(pm) !== MAX_PM_STEPS) {
+    return { firstTaskSteps: [], secondTaskSteps: [], issue: `Fill the PM to ${MAX_PM_STEPS} steps before proposing a split.` };
+  }
+  if (!Number.isFinite(Date.parse(pm.createdAt))) {
+    return { firstTaskSteps: [], secondTaskSteps: [], issue: "The PM creation date is invalid. Reload the draft before proposing a split." };
+  }
+  if (pm.taskSteps.length < 2 || pm.taskSteps.some((task) => !task.trim())) {
+    return { firstTaskSteps: [], secondTaskSteps: [], issue: "Complete at least two existing task steps before choosing a split point." };
+  }
+  if (!Number.isInteger(splitAfterTaskStep) || splitAfterTaskStep < 1 || splitAfterTaskStep >= pm.taskSteps.length) {
+    return { firstTaskSteps: [], secondTaskSteps: [], issue: "Choose a boundary between existing task steps." };
+  }
+  const actions = overflowActions.filter((action) => action.trim());
+  if (!actions.length) {
+    return { firstTaskSteps: [], secondTaskSteps: [], issue: "Enter at least one additional planner-authored action." };
+  }
+  const firstTaskSteps = pm.taskSteps.slice(0, splitAfterTaskStep);
+  const secondTaskSteps = [...pm.taskSteps.slice(splitAfterTaskStep), ...actions];
+  if (totalPmSteps({ ...pm, taskSteps: firstTaskSteps }) > MAX_PM_STEPS ||
+      totalPmSteps({ ...pm, taskSteps: secondTaskSteps }) > MAX_PM_STEPS) {
+    return { firstTaskSteps, secondTaskSteps, issue: `Each resulting PM must have ${MAX_PM_STEPS} steps or fewer. Choose another boundary or prepare a separate split.` };
+  }
+  return { firstTaskSteps, secondTaskSteps, issue: null };
+}
+
+export function createPmSplitDrafts(pm: PmDraft, splitAfterTaskStep: number, overflowActions: string[]): [PmDraft, PmDraft] {
+  const preview = previewPmSplit(pm, splitAfterTaskStep, overflowActions);
+  if (preview.issue) throw new Error(preview.issue);
+  const first: PmDraft = { ...pm, taskSteps: preview.firstTaskSteps };
+  const second: PmDraft = {
+    ...pm,
+    id: createId(),
+    createdAt: new Date(Date.parse(pm.createdAt) + 1).toISOString(),
+    taskSteps: preview.secondTaskSteps,
+    status: "draft",
+    approvedAt: undefined,
+    revisionNumber: undefined,
+    baseRevisionNumber: undefined,
+    changeSummary: "",
+  };
+  return [first, second];
 }
 
 export function openingPmStep(pm: PmDraft): string {

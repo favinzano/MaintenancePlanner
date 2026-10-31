@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
 import { getDocument as getPdfDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../src/domain/planner.js";
+import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AdditionalPmPlan, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../src/domain/planner.js";
 import { assertReviewedManualReferences, parseSaveBody, type SaveBody } from "./save-validation.js";
 import { MANUAL_CONTENT_TYPES, parseManualUploadDescriptor, readManualUploadConfig, verifyPdfPageCount, type ManualExtractionMethod, type ManualLocatorRange, type ManualUploadDescriptor } from "./manual-validation.js";
 
@@ -206,8 +206,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
   }));
 
   const hasPmRevisionSchema = await pmRevisionSchemaReady();
-  let pm: PmDraft | undefined;
-  let pmVersions: PmVersionHistoryEntry[] = [];
+  const pmPlans: AdditionalPmPlan[] = [];
   if (hasPmRevisionSchema) {
   const pmResult = await pool.query<{
     pm_id: string; draft_content: PmDraft | null; draft_base_revision_number: number | null;
@@ -228,11 +227,10 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
            FROM public.pm_versions WHERE pm_id = p.id AND status = 'draft' LIMIT 1
        ) draft ON true
       WHERE a.analysis_id = $1 AND p.owner_id = $2 AND p.workspace_id = $3
-      ORDER BY p.updated_at DESC LIMIT 1`,
+      ORDER BY COALESCE(draft.content->>'createdAt', approved.content->>'createdAt') ASC NULLS LAST, p.id ASC`,
     [analysisId, owner.userId, owner.workspaceId],
   );
-  const pmRecord = pmResult.rows[0];
-  if (pmRecord) {
+  for (const pmRecord of pmResult.rows) {
     const versionsResult = await pool.query<{
       id: string; revision_number: number; content: PmDraft; change_summary: string | null; approved_at: Date;
     }>(
@@ -242,7 +240,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         ORDER BY revision_number ASC`,
       [pmRecord.pm_id, owner.userId, owner.workspaceId],
     );
-    pmVersions = versionsResult.rows.map((version) => {
+    const pmVersions = versionsResult.rows.map((version) => {
       const approvedAt = version.approved_at.toISOString();
       const snapshot: PmDraft = {
         ...version.content,
@@ -262,6 +260,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         pm: snapshot,
       };
     });
+    let pm: PmDraft | undefined;
     if (pmRecord.draft_content) {
       pm = {
         ...pmRecord.draft_content,
@@ -285,6 +284,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         evidenceSourceIds: pmRecord.approved_content.evidenceSourceIds ?? [],
       };
     }
+    if (pm) pmPlans.push({ pm, pmVersions });
   }
   } else {
     const pmResult = await pool.query<{
@@ -300,10 +300,11 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
            SELECT content FROM public.pm_versions WHERE pm_id = p.id AND status = 'draft' LIMIT 1
          ) draft ON true
         WHERE a.analysis_id = $1 AND p.owner_id = $2 AND p.workspace_id = $3
-        ORDER BY p.updated_at DESC LIMIT 1`,
+        ORDER BY COALESCE(draft.content->>'createdAt', approved.content->>'createdAt') ASC NULLS LAST, p.id ASC`,
       [analysisId, owner.userId, owner.workspaceId],
     );
-    const legacyRecord = pmResult.rows[0];
+    for (const legacyRecord of pmResult.rows) {
+    let pmVersions: PmVersionHistoryEntry[] = [];
     if (legacyRecord?.approved_content && legacyRecord.approved_id) {
       const approvedAt = legacyRecord.approved_at?.toISOString() ?? new Date(0).toISOString();
       const approvedPm: PmDraft = {
@@ -318,6 +319,7 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
       };
       pmVersions = [{ id: legacyRecord.approved_id, revisionNumber: 0, approvedAt, changeSummary: null, pm: approvedPm }];
     }
+    let pm: PmDraft | undefined;
     const currentContent = legacyRecord?.draft_content ?? legacyRecord?.approved_content;
     if (currentContent && legacyRecord) {
       pm = {
@@ -331,7 +333,10 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
         evidenceSourceIds: currentContent.evidenceSourceIds ?? [],
       };
     }
+    if (pm) pmPlans.push({ pm, pmVersions });
+    }
   }
+  const [primaryPm, ...additionalPms] = pmPlans;
   const stageIndex = Math.max(0, workflowStages.indexOf(row.processing_stage as typeof workflowStages[number]));
   return {
     id: row.id,
@@ -347,8 +352,9 @@ async function loadAnalysis(owner: Principal, analysisId: string): Promise<Plann
     manualDocuments,
     evidenceDecision: row.evidence_decision,
     assets,
-    pm,
-    pmVersions,
+    pm: primaryPm?.pm,
+    pmVersions: primaryPm?.pmVersions ?? [],
+    additionalPms,
     stage: stageIndex,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -377,21 +383,21 @@ async function loadWorkspace(owner: Principal, currentAnalysisId?: string): Prom
 }
 
 function canonicalAnalysis(analysis: PlannerAnalysis, includeRevisionIntent = false) {
-  const pm = analysis.pm ? {
-    id: analysis.pm.id,
-    title: analysis.pm.title,
-    assetId: analysis.pm.assetId,
-    frequency: analysis.pm.frequency,
-    durationMinutes: analysis.pm.durationMinutes,
-    operatingState: analysis.pm.operatingState,
-    safetyPrecautions: analysis.pm.safetyPrecautions,
-    unresolvedSafetyAcknowledged: analysis.pm.unresolvedSafetyAcknowledged,
-    taskSteps: analysis.pm.taskSteps,
-    finalVerification: analysis.pm.finalVerification,
-    evidenceSourceIds: analysis.pm.evidenceSourceIds,
-    status: analysis.pm.status,
-    changeSummary: analysis.pm.changeSummary?.trim() ?? "",
-    baseRevisionNumber: analysis.pm.status === "draft" || includeRevisionIntent ? analysis.pm.baseRevisionNumber : undefined,
+  const canonicalPm = (candidate: PmDraft | undefined) => candidate ? {
+    id: candidate.id,
+    title: candidate.title,
+    assetId: candidate.assetId,
+    frequency: candidate.frequency,
+    durationMinutes: candidate.durationMinutes,
+    operatingState: candidate.operatingState,
+    safetyPrecautions: candidate.safetyPrecautions,
+    unresolvedSafetyAcknowledged: candidate.unresolvedSafetyAcknowledged,
+    taskSteps: candidate.taskSteps,
+    finalVerification: candidate.finalVerification,
+    evidenceSourceIds: candidate.evidenceSourceIds,
+    status: candidate.status,
+    changeSummary: candidate.changeSummary?.trim() ?? "",
+    baseRevisionNumber: candidate.status === "draft" || includeRevisionIntent ? candidate.baseRevisionNumber : undefined,
   } : null;
   return {
     id: analysis.id,
@@ -406,20 +412,25 @@ function canonicalAnalysis(analysis: PlannerAnalysis, includeRevisionIntent = fa
     evidenceDecision: analysis.evidenceDecision,
     stage: analysis.stage,
     assets: analysis.assets.map((asset) => ({ ...asset })).sort((a, b) => a.id.localeCompare(b.id)),
-    pm,
+    pm: canonicalPm(analysis.pm),
+    additionalPms: (analysis.additionalPms ?? []).map((record) => canonicalPm(record.pm)),
   };
 }
 
 async function persistAnalysis(owner: Principal, body: SaveBody, creating: boolean): Promise<{ analysis: PlannerAnalysis; workspace: Awaited<ReturnType<typeof loadWorkspace>> }> {
   const { analysis, expectedRowVersion, operationId } = body;
   if (creating !== (expectedRowVersion === 0)) throw Object.assign(new Error("The analysis version is invalid."), { statusCode: 409 });
-  if (analysis.pm) {
-    const confirmed = analysis.assets.filter((asset) => asset.confirmed);
-    if (!confirmed.some((asset) => asset.id === analysis.pm?.assetId)) {
-      throw Object.assign(new Error("The PM must reference an asset confirmed in this analysis."), { statusCode: 422 });
+  const requestedPms = [
+    ...(analysis.pm ? [analysis.pm] : []),
+    ...(analysis.additionalPms ?? []).map((record) => record.pm),
+  ];
+  const confirmed = analysis.assets.filter((asset) => asset.confirmed);
+  for (const pm of requestedPms) {
+    if (!confirmed.some((asset) => asset.id === pm.assetId)) {
+      throw Object.assign(new Error("Each PM must reference an asset confirmed in this analysis."), { statusCode: 422 });
     }
-    if (analysis.pm.status === "approved") {
-      const issues = pmApprovalIssues(analysis.pm, confirmed);
+    if (pm.status === "approved") {
+      const issues = pmApprovalIssues(pm, confirmed);
       if (issues.length) throw Object.assign(new Error(issues.join(" ")), { statusCode: 422 });
     }
   }
@@ -427,7 +438,7 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
   const client: PoolClient = await pool.connect();
   const requestDigest = digest({ analysis: canonicalAnalysis(analysis, true), expectedRowVersion });
   let expectedStored: PlannerAnalysis | null = null;
-  let expectedPmVersions: PmVersionHistoryEntry[] | undefined;
+  const expectedPmVersions = new Map<string, PmVersionHistoryEntry[]>();
   try {
     await client.query("BEGIN");
     const priorOperation = await client.query<{ request_digest: string }>(
@@ -523,7 +534,8 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
       );
     }
 
-    const manualReferenceIds = analysis.pm?.evidenceSourceIds.filter((id) => id !== analysis.plannerEvidence?.id) ?? [];
+    const manualReferenceIds = [...new Set(requestedPms.flatMap((pm) => pm.evidenceSourceIds ?? [])
+      .filter((id) => id !== analysis.plannerEvidence?.id))];
     if (manualReferenceIds.length) {
       const referenced = await client.query<{ id: string }>(
         `SELECT s.id
@@ -576,7 +588,10 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
       [analysis.id, owner.userId, owner.workspaceId, assetIds],
     );
 
-    if (analysis.pm) expectedPmVersions = await persistPm(client, owner, analysis);
+    for (const pm of requestedPms) {
+      const versions = await persistSinglePm(client, owner, { ...analysis, pm });
+      expectedPmVersions.set(pm.id, versions);
+    }
 
     await client.query(
       `INSERT INTO public.operation_receipts
@@ -589,8 +604,15 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
     await client.query("COMMIT");
 
     const readBack = await loadAnalysis(owner, analysis.id);
-    if (!readBack || JSON.stringify(canonicalAnalysis(readBack)) !== JSON.stringify(canonicalAnalysis(analysis)) ||
-        (expectedPmVersions && !samePmHistory(expectedPmVersions, readBack.pmVersions ?? []))) {
+    const readBackPms = [
+      ...(readBack?.pm ? [{ pm: readBack.pm, pmVersions: readBack.pmVersions ?? [] }] : []),
+      ...(readBack?.additionalPms ?? []),
+    ];
+    const pmHistoriesMatch = [...expectedPmVersions].every(([pmId, versions]) => {
+      const readBackPm = readBackPms.find((record) => record.pm.id === pmId);
+      return Boolean(readBackPm && samePmHistory(versions, readBackPm.pmVersions));
+    }) && readBackPms.length === expectedPmVersions.size;
+    if (!readBack || JSON.stringify(canonicalAnalysis(readBack)) !== JSON.stringify(canonicalAnalysis(analysis)) || !pmHistoriesMatch) {
       throw Object.assign(new Error("The database write completed, but its read-back did not match. The result is unverified."), { statusCode: 503 });
     }
     expectedStored = readBack;
@@ -604,7 +626,7 @@ async function persistAnalysis(owner: Principal, body: SaveBody, creating: boole
   return { analysis: expectedStored, workspace: await loadWorkspace(owner, expectedStored.id) };
 }
 
-async function persistPm(client: PoolClient, owner: Principal, analysis: PlannerAnalysis): Promise<PmVersionHistoryEntry[]> {
+async function persistSinglePm(client: PoolClient, owner: Principal, analysis: PlannerAnalysis): Promise<PmVersionHistoryEntry[]> {
   if (!(await pmRevisionSchemaReady())) return persistPmLegacy(client, owner, analysis);
   const pm = analysis.pm as PmDraft;
   const existing = await client.query<{ current_approved_version_id: string | null }>(
@@ -613,12 +635,12 @@ async function persistPm(client: PoolClient, owner: Principal, analysis: Planner
     [pm.id, owner.userId, owner.workspaceId],
   );
   const inserted = await client.query(
-    `INSERT INTO public.pms (id, asset_id, owner_id, workspace_id)
-     VALUES ($1,$2,$3,$4)
+    `INSERT INTO public.pms (id, asset_id, owner_id, workspace_id, created_at)
+     VALUES ($1,$2,$3,$4,$5)
      ON CONFLICT (id) DO UPDATE SET asset_id = EXCLUDED.asset_id, updated_at = now()
      WHERE public.pms.owner_id = EXCLUDED.owner_id AND public.pms.workspace_id = EXCLUDED.workspace_id
      RETURNING id`,
-    [pm.id, pm.assetId, owner.userId, owner.workspaceId],
+    [pm.id, pm.assetId, owner.userId, owner.workspaceId, pm.createdAt],
   );
   if (!inserted.rowCount) throw Object.assign(new Error("This PM belongs to another workspace."), { statusCode: 409 });
 
@@ -768,12 +790,12 @@ async function persistPmLegacy(client: PoolClient, owner: Principal, analysis: P
     [pm.id, owner.userId, owner.workspaceId],
   );
   const inserted = await client.query(
-    `INSERT INTO public.pms (id, asset_id, owner_id, workspace_id)
-     VALUES ($1,$2,$3,$4)
+    `INSERT INTO public.pms (id, asset_id, owner_id, workspace_id, created_at)
+     VALUES ($1,$2,$3,$4,$5)
      ON CONFLICT (id) DO UPDATE SET asset_id = EXCLUDED.asset_id, updated_at = now()
      WHERE public.pms.owner_id = EXCLUDED.owner_id AND public.pms.workspace_id = EXCLUDED.workspace_id
      RETURNING id`,
-    [pm.id, pm.assetId, owner.userId, owner.workspaceId],
+    [pm.id, pm.assetId, owner.userId, owner.workspaceId, pm.createdAt],
   );
   if (!inserted.rowCount) throw Object.assign(new Error("This PM belongs to another workspace."), { statusCode: 409 });
   const draft = await client.query<{ id: string }>(

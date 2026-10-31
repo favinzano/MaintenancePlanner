@@ -33,6 +33,8 @@ Date: 2026-10-31.
 - Issue [03](issues/03-local-manual-intake.md) is resolved for implementation and requested checks. Chromium FileChooser selection/local extraction and second-account manual download denial passed with synthetic data; temporary identities, fixture, analysis rows, and processes were cleaned up. The Windows file dialog's visual appearance and keyboard navigation remain unverified because Playwright handled selection through `FileChooser.setFiles`. Numeric limits and production upload readiness remain open; see [test plan](../../replica/test-plan.md) and [build log](../../replica/build-log.md).
 - The `/replica-diff` assessment is in [`replica/parity.md`](../../replica/parity.md): 61.1/100 coverage against the nine tracked PlannerMC must-haves, not parity against a vendor app. No comparable original workflow screenshots or walkthrough are available.
 - Issue [04-pm-revision-lifecycle](issues/04-pm-revision-lifecycle.md) is resolved. The additive migration was applied to `plannermc-dev` only; hosted lifecycle QA and a focused local Playwright test passed. Evidence and retained synthetic QA data are documented in `replica/test-plan.md` and `replica/build-log.md`.
+- Issue [05-pm-split-proposal](issues/05-pm-split-proposal.md) is resolved. The planner can author overflow actions, choose a boundary, review two PMs under the 15-step cap, and confirm or cancel. Both drafts persist independently and were verified in local E2E and authenticated `plannermc-dev` QA. Production and CMMS were not touched.
+- Updated [`replica/parity.md`](../../replica/parity.md) to 66.7/100 against the PlannerMC MVP must-haves. This is not vendor-product parity.
 
 ## Fog
 
@@ -42,4 +44,4 @@ Date: 2026-10-31.
 
 ## Next flow step
 
-Issue 04 is resolved. The next suitable bounded MVP gap is a planner-confirmed split proposal when a PM exceeds 15 steps; the limit itself already exists. Other gaps and dependencies are ranked in `replica/parity.md`.
+Issues 04 and 05 are resolved. The next flow step is `/replica-diff` to review the updated coverage and rank the remaining gaps before selecting another build slice.

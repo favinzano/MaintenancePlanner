@@ -15,6 +15,7 @@ const ids = {
   otherSource: "88888888-8888-4888-8888-888888888888",
   manualSource: "99999999-9999-4999-8999-999999999999",
   manualDocument: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  siblingPm: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 };
 
 function validManual() {
@@ -125,6 +126,28 @@ test("rejects duplicate PM source references", () => {
   const body = validBody();
   body.analysis.pm!.evidenceSourceIds = [ids.source, ids.source];
   assert.throws(() => parseSaveBody(body), /references must be unique/i);
+});
+
+test("accepts separate PM drafts with independent version histories", () => {
+  const body = validBody();
+  const sibling = { ...body.analysis.pm!, id: ids.siblingPm, title: "QA sibling PM" };
+  body.analysis.additionalPms = [{ pm: sibling, pmVersions: [] }];
+  const parsed = parseSaveBody(body);
+  assert.equal(parsed.analysis.pm?.id, ids.pm);
+  assert.equal(parsed.analysis.additionalPms?.[0].pm.id, ids.siblingPm);
+});
+
+test("rejects a sibling PM that exceeds the 15-step cap", () => {
+  const body = validBody();
+  const sibling = { ...body.analysis.pm!, id: ids.siblingPm, taskSteps: Array.from({ length: 14 }, (_, index) => `Synthetic step ${index + 1}`) };
+  body.analysis.additionalPms = [{ pm: sibling, pmVersions: [] }];
+  assert.throws(() => parseSaveBody(body), /keep the pm to 15 steps or fewer/i);
+});
+
+test("rejects duplicate PM IDs across the analysis plan list", () => {
+  const body = validBody();
+  body.analysis.additionalPms = [{ pm: { ...body.analysis.pm! }, pmVersions: [] }];
+  assert.throws(() => parseSaveBody(body), /pm ids must be unique/i);
 });
 
 test("rejects continuing without a saved source review", () => {

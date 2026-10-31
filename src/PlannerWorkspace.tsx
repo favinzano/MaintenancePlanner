@@ -29,10 +29,12 @@ import {
   createAnalysis,
   createEmptyPm,
   createId,
+  createPmSplitDrafts,
   createPlannerEvidence,
   MAX_PM_STEPS,
   openingPmStep,
   pmApprovalIssues,
+  previewPmSplit,
   PLANNER_EVIDENCE_BASE_LIMITATION,
   renderPmText,
   sampleCatalog,
@@ -43,6 +45,7 @@ import {
   type ManualEvidence,
   type ManualExtraction,
   type ManualIntakeConfig,
+  type AdditionalPmPlan,
   type OperatingState,
   type PlannerAnalysis,
   type PlannerEvidence,
@@ -110,6 +113,7 @@ function PlannerWorkspace() {
   const [analysis, setAnalysis] = useState<PlannerAnalysis | null>(null);
   const [manualIntakeConfig, setManualIntakeConfig] = useState<ManualIntakeConfig>(disabledManualIntakeConfig);
   const [pm, setPm] = useState<PmDraft | null>(null);
+  const [activePmId, setActivePmId] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -141,13 +145,16 @@ function PlannerWorkspace() {
         setSnapshot(loaded);
         const selected = loaded.analyses.find((item) => item.id === loaded.currentAnalysisId) ?? loaded.analyses[0] ?? null;
         if (selected) {
+          const initialPm = selected.pm ?? (selected.stage >= 3 ? createEmptyPm(selected) : null);
           setAnalysis(selected);
           setStep(Math.min(selected.stage, 3));
-          setPm(selected.pm ?? (selected.stage >= 3 ? createEmptyPm(selected) : null));
+          setPm(initialPm);
+          setActivePmId(initialPm?.id ?? null);
           setContinueWithLimitations(selected.evidenceDecision === "continue_with_limitations");
         } else {
           setAnalysis(null);
           setPm(null);
+          setActivePmId(null);
         }
       } catch (caught) {
         if (active) setError(caught instanceof Error ? caught.message : "Workspace data could not be loaded.");
@@ -180,6 +187,7 @@ function PlannerWorkspace() {
         setSnapshot({ analyses: [], currentAnalysisId: null, catalog: [] });
         setAnalysis(null);
         setPm(null);
+        setActivePmId(null);
         setManualIntakeConfig(disabledManualIntakeConfig);
         setLoading(false);
       }
@@ -202,6 +210,41 @@ function PlannerWorkspace() {
       setNotice("");
       noticeTimeoutRef.current = undefined;
     }, 3200);
+  }
+
+  function replaceAnalysisPm(current: PlannerAnalysis, nextPm: PmDraft): PlannerAnalysis {
+    if (!current.pm || current.pm.id === nextPm.id) return { ...current, pm: nextPm };
+    const additionalPms = [...(current.additionalPms ?? [])];
+    const index = additionalPms.findIndex((record) => record.pm.id === nextPm.id);
+    if (index < 0) additionalPms.push({ pm: nextPm, pmVersions: [] });
+    else additionalPms[index] = { ...additionalPms[index], pm: nextPm };
+    return { ...current, additionalPms };
+  }
+
+  function updateActivePm(nextPm: PmDraft) {
+    setPm(nextPm);
+    setAnalysis((current) => current ? replaceAnalysisPm(current, nextPm) : current);
+  }
+
+  function getAnalysisPm(current: PlannerAnalysis, pmId: string): PmDraft | undefined {
+    if (current.pm?.id === pmId) return current.pm;
+    return current.additionalPms?.find((record) => record.pm.id === pmId)?.pm;
+  }
+
+  function getPmHistory(current: PlannerAnalysis, pmId: string) {
+    if (current.pm?.id === pmId) return current.pmVersions ?? [];
+    return current.additionalPms?.find((record) => record.pm.id === pmId)?.pmVersions ?? [];
+  }
+
+  function visiblePmPlans(current: PlannerAnalysis, activePm: PmDraft): PmDraft[] {
+    const plans = [
+      ...(current.pm ? [current.pm] : []),
+      ...(current.additionalPms ?? []).map((record) => record.pm),
+    ];
+    const index = plans.findIndex((candidate) => candidate.id === activePm.id);
+    if (index < 0) plans.push(activePm);
+    else plans[index] = activePm;
+    return plans;
   }
 
   async function saveRecord(candidate: PlannerAnalysis, message: string): Promise<PlannerAnalysis | null> {
@@ -244,6 +287,7 @@ function PlannerWorkspace() {
     if (saved) {
       setStep(0);
       setPm(null);
+      setActivePmId(null);
       setContinueWithLimitations(false);
       setParentAcknowledged(false);
       setReviewed(false);
@@ -261,7 +305,9 @@ function PlannerWorkspace() {
     setSnapshot((current) => ({ ...current, currentAnalysisId: id }));
     setAnalysis(selected);
     setStep(Math.min(selected.stage, 3));
-    setPm(selected.pm ?? (selected.stage >= 3 ? createEmptyPm(selected) : null));
+    const selectedPm = selected.pm ?? (selected.stage >= 3 ? createEmptyPm(selected) : null);
+    setPm(selectedPm);
+    setActivePmId(selectedPm?.id ?? null);
     setContinueWithLimitations(selected.evidenceDecision === "continue_with_limitations");
     setParentAcknowledged(false);
     setReviewed(false);
@@ -361,8 +407,13 @@ function PlannerWorkspace() {
 
   async function continueFromAssets() {
     if (!analysis) return;
-    if (analysis.pm?.status === "approved") {
-      setPm(analysis.pm);
+    const approvedPm = [
+      ...(analysis.pm ? [analysis.pm] : []),
+      ...(analysis.additionalPms ?? []).map((record) => record.pm),
+    ].find((candidate) => candidate.status === "approved");
+    if (approvedPm) {
+      setPm(approvedPm);
+      setActivePmId(approvedPm.id);
       setStep(3);
       return;
     }
@@ -381,6 +432,7 @@ function PlannerWorkspace() {
     if (saved) {
       const nextPm = saved.pm ?? createEmptyPm(saved);
       setPm(nextPm);
+      setActivePmId(nextPm.id);
       setStep(3);
       setReviewed(false);
       setApprovalIssues([]);
@@ -390,13 +442,15 @@ function PlannerWorkspace() {
   async function savePmDraft() {
     if (!analysis || !pm) return;
     if (pm.status === "approved") return;
-    const saved = await saveRecord({ ...analysis, pm: { ...pm, status: "draft", approvedAt: undefined }, stage: 3 }, "PM draft saved and read back.");
-    if (saved) setPm(saved.pm ?? pm);
+    const draft = { ...pm, status: "draft" as const, approvedAt: undefined };
+    const candidate = replaceAnalysisPm({ ...analysis, stage: 3 }, draft);
+    const saved = await saveRecord(candidate, "PM draft saved and read back.");
+    if (saved) setPm(getAnalysisPm(saved, draft.id) ?? draft);
   }
 
   async function startPmRevision() {
     if (!analysis || !pm || pm.status !== "approved" || (backendMode && snapshot.pmRevisionLifecycleEnabled !== true)) return;
-    const latestRevision = analysis.pmVersions?.at(-1)?.revisionNumber;
+    const latestRevision = getPmHistory(analysis, pm.id).at(-1)?.revisionNumber;
     const baseRevisionNumber = pm.revisionNumber ?? latestRevision ?? 0;
     const draft: PmDraft = {
       ...pm,
@@ -406,9 +460,10 @@ function PlannerWorkspace() {
       baseRevisionNumber,
       changeSummary: "",
     };
-    const saved = await saveRecord({ ...analysis, pm: draft, stage: 3 }, "PM revision draft started and read back.");
-    if (saved?.pm) {
-      setPm(saved.pm);
+    const saved = await saveRecord(replaceAnalysisPm({ ...analysis, stage: 3 }, draft), "PM revision draft started and read back.");
+    const savedPm = saved ? getAnalysisPm(saved, draft.id) : undefined;
+    if (savedPm) {
+      setPm(savedPm);
       setReviewed(false);
       setApprovalIssues([]);
     }
@@ -424,8 +479,49 @@ function PlannerWorkspace() {
       return;
     }
     const approved: PmDraft = { ...pm, status: "approved", approvedAt: new Date().toISOString() };
-    const saved = await saveRecord({ ...analysis, pm: approved, stage: 3 }, "PM approved and verified. Nothing was sent to a CMMS.");
-    if (saved?.pm) setPm(saved.pm);
+    const saved = await saveRecord(replaceAnalysisPm({ ...analysis, stage: 3 }, approved), "PM approved and verified. Nothing was sent to a CMMS.");
+    const savedPm = saved ? getAnalysisPm(saved, approved.id) : undefined;
+    if (savedPm) setPm(savedPm);
+  }
+
+  async function confirmPmSplit(splitAfterTaskStep: number, overflowActions: string[]) {
+    if (!analysis || !pm) return false;
+    let first: PmDraft;
+    let second: PmDraft;
+    try {
+      [first, second] = createPmSplitDrafts(pm, splitAfterTaskStep, overflowActions);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The PM split proposal is invalid.");
+      return false;
+    }
+    let candidate = replaceAnalysisPm({ ...analysis, stage: 3 }, first);
+    const additionalPms: AdditionalPmPlan[] = [...(candidate.additionalPms ?? [])];
+    additionalPms.push({ pm: second, pmVersions: [] });
+    candidate = { ...candidate, additionalPms };
+    const saved = await saveRecord(candidate, "PM split confirmed. Both drafts were saved and read back.");
+    const savedPm = saved ? getAnalysisPm(saved, first.id) : undefined;
+    if (savedPm) {
+      setPm(savedPm);
+      setActivePmId(savedPm.id);
+      setReviewed(false);
+      setApprovalIssues([]);
+      return true;
+    }
+    return false;
+  }
+
+  function selectPm(pmId: string) {
+    if (!analysis) return;
+    const selected = getAnalysisPm(analysis, pmId);
+    if (!selected) {
+      setError("That PM could not be found in this analysis.");
+      return;
+    }
+    setPm(selected);
+    setActivePmId(pmId);
+    setReviewed(false);
+    setApprovalIssues([]);
+    setError("");
   }
 
   async function copyText(text: string, message: string) {
@@ -449,10 +545,14 @@ function PlannerWorkspace() {
 
   function changeStep(target: number) {
     if (!analysis || target > analysis.stage || target < 0) return;
-    if ((analysis.pmVersions?.length ?? 0) > 0 && target !== 3) return;
+    if (((analysis.pmVersions?.length ?? 0) > 0 || (analysis.additionalPms ?? []).some((record) => record.pmVersions.length > 0)) && target !== 3) return;
     setError("");
     setStep(target);
-    if (target === 3) setPm(analysis.pm ?? createEmptyPm(analysis));
+    if (target === 3) {
+      const selectedPm = analysis.pm ?? createEmptyPm(analysis);
+      setPm(selectedPm);
+      setActivePmId(selectedPm.id);
+    }
   }
 
   async function signIn(email: string, password: string) {
@@ -484,6 +584,9 @@ function PlannerWorkspace() {
   }
 
   const sortedAnalyses = [...snapshot.analyses].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const currentPmPlans = analysis && pm ? visiblePmPlans(analysis, pm) : [];
+  const hasApprovedPmHistory = currentPmPlans.some((candidate) => candidate.status === "approved" ||
+    (candidate.id === analysis?.pm?.id ? analysis.pmVersions?.length : analysis?.additionalPms?.find((record) => record.pm.id === candidate.id)?.pmVersions.length));
 
   if (backendMode && !supabaseClient) return <BackendConfigNotice />;
   if (backendMode && !authReady) return <LoadingState />;
@@ -512,7 +615,7 @@ function PlannerWorkspace() {
           {sortedAnalyses.map((item) => (
             <button key={item.id} type="button" onClick={() => selectAnalysis(item.id)} className={`truncate rounded-control px-3 py-2 text-left text-xs ${analysis?.id === item.id ? "bg-panel-raised text-foreground" : "text-muted hover:bg-panel hover:text-foreground"}`}>
               {item.equipmentName.trim() || "Untitled analysis"}
-              <span className="mt-1 block truncate text-xs text-muted">{item.pm?.status === "approved" ? "PM approved" : item.stage >= 3 ? "PM draft" : flowSteps[Math.min(item.stage, 3)].label}</span>
+              <span className="mt-1 block truncate text-xs text-muted">{[...(item.pm ? [item.pm] : []), ...(item.additionalPms ?? []).map((record) => record.pm)].some((plan) => plan.status === "approved") ? "PM approved" : item.stage >= 3 ? "PM draft" : flowSteps[Math.min(item.stage, 3)].label}</span>
             </button>
           ))}
         </div>
@@ -566,10 +669,10 @@ function PlannerWorkspace() {
             <>
               <div className="mb-6 grid grid-cols-2 gap-2 lg:grid-cols-4">
                 {flowSteps.map(({ label, caption, icon: Icon }, index) => {
-                  const hasApprovedHistory = (analysis.pmVersions?.length ?? 0) > 0;
+                  const hasApprovedHistory = hasApprovedPmHistory;
                   const available = index <= analysis.stage && (!hasApprovedHistory || index === 3);
                   const current = index === step;
-                  const complete = index < analysis.stage || (index === 3 && analysis.pm?.status === "approved");
+                  const complete = index < analysis.stage || (index === 3 && currentPmPlans.some((candidate) => candidate.status === "approved"));
                   return (
                     <button key={label} type="button" disabled={!available} onClick={() => changeStep(index)} aria-current={current ? "step" : undefined} className={`flex min-h-16 items-center gap-3 rounded-card border px-3 py-3 text-left transition-colors ${current ? "border-ring/50 bg-panel" : complete ? "border-success/40 bg-success/5" : "border-border bg-panel-muted"} disabled:cursor-not-allowed disabled:opacity-60`}>
                       <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-control ${current ? "bg-accent text-accent-foreground" : complete ? "bg-success/15 text-success" : "bg-panel-raised text-muted"}`}>
@@ -583,8 +686,8 @@ function PlannerWorkspace() {
 
               {step === 0 && <IntakeStep analysis={analysis} catalog={snapshot.catalog} readOnly={analysis.stage >= 2} onChange={updateAnalysis} onSubmit={saveIntake} />}
               {step === 1 && <EvidenceStep analysis={analysis} catalog={snapshot.catalog} manualConfig={manualIntakeConfig} readOnly={analysis.stage >= 2 && Boolean(analysis.plannerEvidence?.reviewedAt)} acknowledged={continueWithLimitations} onAcknowledge={setContinueWithLimitations} onUpdateSource={updatePlannerEvidence} onUploadManual={uploadManual} onReviewManual={reviewManual} onReopenManual={reopenManual} onBack={() => changeStep(0)} onContinue={continueFromEvidence} />}
-              {step === 2 && <AssetsStep analysis={analysis} readOnly={analysis.pm?.status === "approved"} onUpdate={updateAsset} onAdd={addSubasset} onRemove={removeAsset} parentAcknowledged={parentAcknowledged} onParentAcknowledged={setParentAcknowledged} onBack={() => changeStep(1)} onContinue={continueFromAssets} />}
-              {step === 3 && pm && <PmStep analysis={analysis} pm={pm} setPm={setPm} assets={confirmedAssets} reviewed={reviewed} onReviewed={setReviewed} issues={approvalIssues} catalog={snapshot.catalog} revisionLifecycleEnabled={!backendMode || snapshot.pmRevisionLifecycleEnabled === true} onBack={() => changeStep(2)} onSave={savePmDraft} onApprove={approvePm} onStartRevision={startPmRevision} onCopy={copyPm} onCopyStep={copyStep} />}
+              {step === 2 && <AssetsStep analysis={analysis} readOnly={currentPmPlans.some((candidate) => candidate.status === "approved")} onUpdate={updateAsset} onAdd={addSubasset} onRemove={removeAsset} parentAcknowledged={parentAcknowledged} onParentAcknowledged={setParentAcknowledged} onBack={() => changeStep(1)} onContinue={continueFromAssets} />}
+              {step === 3 && pm && <PmStep analysis={analysis} pm={pm} pmPlans={currentPmPlans} activePmId={activePmId ?? pm.id} pmVersions={getPmHistory(analysis, pm.id)} setPm={updateActivePm} onSelectPm={selectPm} assets={confirmedAssets} reviewed={reviewed} onReviewed={setReviewed} issues={approvalIssues} catalog={snapshot.catalog} revisionLifecycleEnabled={!backendMode || snapshot.pmRevisionLifecycleEnabled === true} onBack={() => changeStep(2)} onSave={savePmDraft} onApprove={approvePm} onStartRevision={startPmRevision} onCopy={copyPm} onCopyStep={copyStep} onConfirmSplit={confirmPmSplit} />}
             </>
           )}
           </fieldset>
@@ -1081,10 +1184,14 @@ function AssetRow({ asset, root = false, index, readOnly, onUpdate, onRemove }: 
   );
 }
 
-function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, catalog, revisionLifecycleEnabled, onBack, onSave, onApprove, onStartRevision, onCopy, onCopyStep }: {
+function PmStep({ analysis, pm, pmPlans, activePmId, pmVersions, setPm, onSelectPm, assets, reviewed, onReviewed, issues, catalog, revisionLifecycleEnabled, onBack, onSave, onApprove, onStartRevision, onCopy, onCopyStep, onConfirmSplit }: {
   analysis: PlannerAnalysis;
   pm: PmDraft;
+  pmPlans: PmDraft[];
+  activePmId: string;
+  pmVersions: PlannerAnalysis["pmVersions"];
   setPm: (pm: PmDraft) => void;
+  onSelectPm: (pmId: string) => void;
   assets: AssetProposal[];
   reviewed: boolean;
   onReviewed: (checked: boolean) => void;
@@ -1097,10 +1204,21 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
   onStartRevision: () => void;
   onCopy: () => void;
   onCopyStep: (label: string, text: string) => void;
+  onConfirmSplit: (splitAfterTaskStep: number, overflowActions: string[]) => Promise<boolean>;
 }) {
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [splitAfterTaskStep, setSplitAfterTaskStep] = useState(Math.max(1, Math.floor(pm.taskSteps.length / 2)));
+  const [overflowText, setOverflowText] = useState("");
+  useEffect(() => {
+    setSplitOpen(false);
+    setSplitAfterTaskStep(Math.max(1, Math.floor(pm.taskSteps.length / 2)));
+    setOverflowText("");
+  }, [pm.id]);
   const isApproved = pm.status === "approved";
   const unresolved = pm.operatingState === "undetermined" || !pm.safetyPrecautions.trim();
   const stepsCount = totalPmSteps(pm);
+  const overflowActions = overflowText.split(/\r?\n/).filter((action) => action.trim());
+  const splitPreview = previewPmSplit(pm, splitAfterTaskStep, overflowActions);
   function change<K extends keyof PmDraft>(key: K, value: PmDraft[K]) {
     setPm({ ...pm, [key]: value });
   }
@@ -1119,6 +1237,14 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
         </span>
       </div>
 
+      {pmPlans.length > 1 && <div className="mb-5 max-w-xl">
+        <Field label="Maintenance plan" htmlFor="pm-plan-select" hint="Each plan has its own draft and approval history.">
+          <select id="pm-plan-select" className={controlClass} value={activePmId} onChange={(event) => onSelectPm(event.target.value)}>
+            {pmPlans.map((candidate, index) => <option key={candidate.id} value={candidate.id}>{`PM ${index + 1}: ${candidate.title.trim() || "Untitled PM"} · ${candidate.status === "approved" ? "Approved" : "Draft"}`}</option>)}
+          </select>
+        </Field>
+      </div>}
+
       {isApproved && <div className="mb-5 flex items-start gap-3 rounded-card border border-success/40 bg-success/5 p-4 text-sm leading-6 text-muted"><FileCheck2 size={17} className="mt-0.5 shrink-0 text-success" aria-hidden="true" /><p>This saved version was approved {backendMode ? "in this workspace" : "in this browser"} on {pm.approvedAt ? new Date(pm.approvedAt).toLocaleString() : "an earlier session"}. {pm.revisionNumber === 0 || pm.revisionNumber === undefined ? "It is the initial approved version." : `It is revision ${pm.revisionNumber}.`} It has not been sent to a CMMS.</p></div>}
       {isApproved && !revisionLifecycleEnabled && <p role="status" className="mb-5 rounded-control border border-warning/40 bg-warning/5 p-3 text-sm leading-5 text-muted">PM revision history is waiting for the database migration. This approved version remains available to copy.</p>}
 
@@ -1128,10 +1254,10 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
         </Field>
       </div>}
 
-      {(analysis.pmVersions?.length ?? 0) > 0 && <section aria-label="Approved revision history" className="mb-6 rounded-card border border-border bg-panel-muted p-4">
+      {(pmVersions?.length ?? 0) > 0 && <section aria-label="Approved revision history" className="mb-6 rounded-card border border-border bg-panel-muted p-4">
         <h3 className="text-sm font-semibold">Approved revision history</h3>
         <ol className="mt-3 space-y-3">
-          {[...(analysis.pmVersions ?? [])].sort((a, b) => b.revisionNumber - a.revisionNumber).map((version) => <li key={version.id} className="rounded-control border border-border bg-panel p-3">
+          {[...(pmVersions ?? [])].sort((a, b) => b.revisionNumber - a.revisionNumber).map((version) => <li key={version.id} className="rounded-control border border-border bg-panel p-3">
             <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
               <p className="text-sm font-medium">{version.revisionNumber === 0 ? "Initial approved version" : `Revision ${version.revisionNumber}`}</p>
               <time className="text-xs text-muted" dateTime={version.approvedAt}>{new Date(version.approvedAt).toLocaleString()}</time>
@@ -1214,6 +1340,46 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
               <ActionButton type="button" disabled={isApproved || stepsCount >= MAX_PM_STEPS} onClick={() => change("taskSteps", [...pm.taskSteps, ""])}><Plus size={15} aria-hidden="true" />Add task step</ActionButton>
               <span className="text-xs text-muted">Up to {MAX_PM_STEPS - 2} task steps</span>
             </div>
+            {stepsCount >= MAX_PM_STEPS && <div className="mt-4 rounded-card border border-warning/40 bg-warning/5 p-4">
+              {!splitOpen ? <>
+                <p className="text-sm leading-5 text-muted">If more required actions do not fit, propose a split and review both drafts before saving them.</p>
+                <ActionButton type="button" disabled={isApproved || pm.baseRevisionNumber !== undefined} onClick={() => setSplitOpen(true)} className="mt-3"><ListChecks size={15} aria-hidden="true" />Propose PM split</ActionButton>
+                {pm.baseRevisionNumber !== undefined && <p className="mt-2 text-xs leading-5 text-muted">Splitting an approved revision is not available in this build.</p>}
+              </> : <div className="space-y-4">
+                <div>
+                  <h4 className="text-sm font-semibold">PM split proposal</h4>
+                  <p className="mt-1 text-xs leading-5 text-muted">Choose where the existing task steps separate, then enter the additional planner-authored actions. Each non-empty line becomes one task step.</p>
+                </div>
+                <Field label="PM 1 keeps task steps through" htmlFor="pm-split-boundary">
+                  <select id="pm-split-boundary" className={controlClass} value={splitAfterTaskStep} onChange={(event) => setSplitAfterTaskStep(Number(event.target.value))}>
+                    {pm.taskSteps.slice(1).map((_, index) => <option key={index + 1} value={index + 1}>{`Task step ${index + 1}`}</option>)}
+                  </select>
+                </Field>
+                <Field label="Additional actions for the continuation PM" htmlFor="pm-split-overflow" hint="Enter only actions supplied by the planner. PlannerMC will not generate or rewrite their wording.">
+                  <textarea id="pm-split-overflow" rows={5} className={textAreaClass} value={overflowText} onChange={(event) => setOverflowText(event.target.value)} placeholder="Enter one additional action per line" />
+                </Field>
+                <div aria-live="polite" className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-control border border-border bg-panel p-3">
+                    <p className="text-sm font-semibold">PM 1 · {2 + splitPreview.firstTaskSteps.length} / {MAX_PM_STEPS} steps</p>
+                    <p className="mt-1 text-xs text-muted">Opening statement and final verification are included.</p>
+                    {splitPreview.firstTaskSteps.length > 0 && <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs leading-5 text-foreground">{splitPreview.firstTaskSteps.map((action, index) => <li key={`${index}-${action}`}>{action}</li>)}</ol>}
+                  </div>
+                  <div className="rounded-control border border-border bg-panel p-3">
+                    <p className="text-sm font-semibold">PM 2 · {2 + splitPreview.secondTaskSteps.length} / {MAX_PM_STEPS} steps</p>
+                    <p className="mt-1 text-xs text-muted">Opening statement and final verification are included.</p>
+                    {splitPreview.secondTaskSteps.length > 0 && <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs leading-5 text-foreground">{splitPreview.secondTaskSteps.map((action, index) => <li key={`${index}-${action}`}>{action}</li>)}</ol>}
+                  </div>
+                </div>
+                {splitPreview.issue && <p role="status" className="rounded-control border border-warning/40 bg-warning/5 p-3 text-xs leading-5 text-muted">{splitPreview.issue}</p>}
+                <div className="flex flex-wrap gap-2">
+                  <ActionButton type="button" onClick={() => { setSplitOpen(false); setOverflowText(""); }}>Cancel proposal</ActionButton>
+                  <ActionButton type="button" variant="primary" disabled={Boolean(splitPreview.issue)} onClick={async () => {
+                    const saved = await onConfirmSplit(splitAfterTaskStep, overflowActions);
+                    if (saved) setSplitOpen(false);
+                  }}>Confirm split and save drafts</ActionButton>
+                </div>
+              </div>}
+            </div>}
             <div className="mt-4 border-t border-border pt-4">
               <Field label="Final verification content" htmlFor="final-verification"><textarea id="final-verification" disabled={isApproved} rows={2} className={textAreaClass} value={pm.finalVerification} onChange={(event) => change("finalVerification", event.target.value)} placeholder="Describe what the planner should verify and record at the end…" /></Field>
             </div>
@@ -1241,7 +1407,7 @@ function PmStep({ analysis, pm, setPm, assets, reviewed, onReviewed, issues, cat
       </div>
 
       <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-border pt-5">
-        <ActionButton type="button" onClick={onBack} disabled={isApproved || (analysis.pmVersions?.length ?? 0) > 0}><ArrowLeft size={15} aria-hidden="true" />Back to assets</ActionButton>
+        <ActionButton type="button" onClick={onBack} disabled={isApproved || (pmVersions?.length ?? 0) > 0}><ArrowLeft size={15} aria-hidden="true" />Back to assets</ActionButton>
         <div className="flex flex-wrap gap-2">
           {!isApproved && <ActionButton type="button" onClick={onSave}><Save size={15} aria-hidden="true" />Save draft</ActionButton>}
           {!isApproved && <ActionButton type="button" variant="primary" onClick={onApprove}><CheckCircle2 size={15} aria-hidden="true" />Approve PM</ActionButton>}

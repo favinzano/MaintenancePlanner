@@ -6,9 +6,9 @@ Assessment basis: `replica/features.csv`, the PlannerMC MVP specification, the c
 
 ## Result
 
-**PlannerMC MVP scope coverage: 61.1 / 100.** This score measures implementation coverage against the nine rows marked `plannermc_spec=yes` in the feature matrix. It is not a parity score against iMPS, Prometheus GWOS-AI, or another original application.
+**PlannerMC MVP scope coverage: 66.7 / 100.** This score measures implementation coverage against the nine rows marked `plannermc_spec=yes` in the feature matrix. It is not a parity score against iMPS, Prometheus GWOS-AI, or another original application.
 
-All nine scored requirements are marked `must`. Three are complete, five are partial, and one is not implemented. The `replica-diff` parity tool assigns weight 3 to each must-have and counts `yes` as full credit, `partial` as half credit, and `no` as zero: 16.5 of 27 possible points, or 61.1%. The tool therefore reports **not shippable against the tracked MVP scope**, because six must-haves remain incomplete. This is separate from production readiness.
+All nine scored requirements are marked `must`. Four are complete, four are partial, and one is not implemented. The `replica-diff` parity tool assigns weight 3 to each must-have and counts `yes` as full credit, `partial` as half credit, and `no` as zero: 18 of 27 possible points, or 66.7%. The tool therefore reports **not shippable against the tracked MVP scope**, because five must-haves remain incomplete. This is separate from production readiness.
 
 The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-scope.csv), regenerated from the current PlannerMC rows in [`features.csv`](features.csv). Its `original=yes` field is a tool-compatible inclusion flag for PlannerMC's own required scope. It does not claim an original vendor has these features.
 
@@ -21,7 +21,7 @@ The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-sco
 | Preserve source provenance, evidence references, and limitations | Partial | Planner/manual source metadata, applicability, locators, review state, and limitations persist; reviewed references appear in PM preview and copy. Extracted manual text remains in the browser. Field-level citations and external-source references are absent. |
 | Propose direct sub-assets under equipment | Yes | The equipment root and its direct children can be edited, individually confirmed, and saved. Deeper hierarchy is not supported. |
 | Generate an English PM with safety, operating state, actions, and final verification | Partial | The editor supports planner-authored fields for these elements. It does not generate or technically validate PM content. Generation is deferred under ADR 0002. |
-| Enforce a 15-step limit and ask before splitting | Partial | The editor enforces the 15-step maximum, counting the opening statement and final verification. Split proposal and planner confirmation are absent. The cap passed F01-E7 in `test-plan.md`. |
+| Enforce a 15-step limit and ask before splitting | Yes | At the cap, the planner can enter overflow actions, choose a boundary, review both resulting procedures and their counts, and explicitly confirm saving two independent drafts. Cancel and over-limit cases are covered by F04. Each proposal creates two PMs; an approved revision cannot be split in this build. |
 | Review, edit, approve, and retain dated PM versions | Yes | Local-prototype Playwright coverage and hosted `plannermc-dev` QA passed for revision draft reload, required summary, consecutive approval numbering, retained snapshots, read-back, identical retry, and stale-tab conflict. Production remains unconfigured and untested. |
 | Support Spanish/English text and voice conversation | No | Text conversation and language preference are absent. Speech input/output are deferred under ADR 0002. |
 | Copy the PM manually to the selected CMMS | Yes | The full PM and individual steps can be copied through the local clipboard. PlannerMC does not write to a CMMS. |
@@ -33,8 +33,7 @@ The parity tool orders incomplete rows by priority and completion credit. That l
 1. **Bilingual text and voice conversation.** No conversation UI or language preference exists. Speech capabilities remain deferred by ADR 0002; resolving the provider, privacy, and retention decisions is a prerequisite to implementation.
 2. **Operational location and area catalog.** Current development values are synthetic. Select the operational source and provisioning process under the open catalog decision before replacing them.
 3. **PM content generation.** The current approved workflow is planner-authored. Generation remains deferred by ADR 0002 and needs a separate data-handling/provider decision before implementation.
-4. **PM split proposal at 15 steps.** The hard limit is implemented, but PlannerMC does not propose or confirm a split when content would exceed it.
-Other partial requirements include file uploads remaining disabled until numeric limits are selected, field-level evidence citations, and external source references. They remain visible in the feature matrix.
+4. **Manual upload limits and production readiness.** Uploads fail closed until representative files, byte/page limits, database capacity, backups, retention, and restore behavior are reviewed. Field-level evidence citations and external source references also remain absent.
 
 ## Comparison with external products
 
@@ -50,10 +49,10 @@ The current QA evidence is summarized in [`test-plan.md`](test-plan.md). It reco
 
 ## Recommended next build slice
 
-**Recommended next action: implement the planner-confirmed PM split proposal at the 15-step limit.** This remains a tracked MVP gap and can build on the current PM editor without selecting a generation provider.
+The planner-confirmed PM split proposal is implemented and verified for initial drafts. The next flow step is `/replica-diff` to review the updated gap ranking before selecting another build slice.
 
 Production uploads remain gated by capacity, numeric limits, backups, retention, and a restore test.
 
 ## Run boundary
 
-This assessment includes the hosted development migration and QA recorded in the 2026-10-31 build log, plus the focused local Playwright test. The result remains implementation coverage against PlannerMC's own MVP requirements, not a vendor application comparison. Production behavior was not tested.
+This assessment includes the hosted development QA, the full local Playwright suite, and the focused PM split test recorded in the 2026-10-31 build log and `test-plan.md`. The result remains implementation coverage against PlannerMC's own MVP requirements, not a vendor application comparison. Production behavior was not tested.

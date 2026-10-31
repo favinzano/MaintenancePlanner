@@ -67,16 +67,28 @@ export function parseSaveBody(body: unknown): SaveBody {
   if (new Set(analysis.assets.map((asset) => asset.id)).size !== analysis.assets.length) {
     throw Object.assign(new Error("Asset IDs must be unique within an analysis."), { statusCode: 400 });
   }
-  if (analysis.pm) {
-    const pm = analysis.pm as unknown as Record<string, unknown>;
+  if (analysis.additionalPms !== undefined && (!Array.isArray(analysis.additionalPms) ||
+      !analysis.additionalPms.every((record) => isRecord(record) && isRecord(record.pm)))) {
+    throw Object.assign(new Error("The additional PM records are invalid."), { statusCode: 400 });
+  }
+  const pms = [
+    ...(analysis.pm ? [analysis.pm] : []),
+    ...(analysis.additionalPms ?? []).map((record) => record.pm),
+  ];
+  if (new Set(pms.map((pm) => pm.id)).size !== pms.length) {
+    throw Object.assign(new Error("PM IDs must be unique within an analysis."), { statusCode: 400 });
+  }
+  for (const plan of pms) {
+    const pm = plan as unknown as Record<string, unknown>;
     const validStates = ["running", "stopped", "undetermined"];
     const validStatuses = ["draft", "approved"];
-    if (!isRecord(analysis.pm) || !uuidPattern.test(String(pm.id)) || !uuidPattern.test(String(pm.assetId)) ||
+    if (!isRecord(plan) || !uuidPattern.test(String(pm.id)) || !uuidPattern.test(String(pm.assetId)) ||
         ![pm.title, pm.frequency, pm.durationMinutes, pm.safetyPrecautions, pm.finalVerification, pm.createdAt].every((value) => typeof value === "string") ||
         !validStates.includes(String(pm.operatingState)) || !validStatuses.includes(String(pm.status)) ||
         typeof pm.unresolvedSafetyAcknowledged !== "boolean" || !Array.isArray(pm.taskSteps) ||
         !pm.taskSteps.every((step) => typeof step === "string") ||
         !Array.isArray(pm.evidenceSourceIds) || !pm.evidenceSourceIds.every((id) => typeof id === "string" && uuidPattern.test(id)) ||
+        !Number.isFinite(Date.parse(String(pm.createdAt))) ||
         (pm.approvedAt !== undefined && typeof pm.approvedAt !== "string") ||
         (pm.revisionNumber !== undefined && (!Number.isInteger(pm.revisionNumber) || Number(pm.revisionNumber) < 0)) ||
         (pm.baseRevisionNumber !== undefined && (!Number.isInteger(pm.baseRevisionNumber) || Number(pm.baseRevisionNumber) < 0)) ||
@@ -93,7 +105,7 @@ export function parseSaveBody(body: unknown): SaveBody {
     if ((pm.evidenceSourceIds as string[]).includes(evidence.id) && typeof evidence.reviewedAt !== "string") {
       throw Object.assign(new Error("Review the planner source before attaching it to a PM."), { statusCode: 422 });
     }
-    if (analysis.pm.taskSteps.length + 2 > MAX_PM_STEPS) {
+    if ((plan.taskSteps?.length ?? 0) + 2 > MAX_PM_STEPS) {
       throw Object.assign(new Error(`Keep the PM to ${MAX_PM_STEPS} steps or fewer.`), { statusCode: 422 });
     }
   }

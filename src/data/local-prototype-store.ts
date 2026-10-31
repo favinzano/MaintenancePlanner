@@ -1,4 +1,4 @@
-import { createId, createPlannerEvidence, sampleCatalog, type CatalogLocation, type PlannerAnalysis, type PmDraft } from "../domain/planner";
+import { createId, createPlannerEvidence, sampleCatalog, type AdditionalPmPlan, type CatalogLocation, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../domain/planner";
 
 const storageKey = "plannermc-local-prototype-v1";
 
@@ -35,6 +35,71 @@ function pmContent(pm: PmDraft) {
   };
 }
 
+function normalizePm(pm: PmDraft): PmDraft {
+  return { ...pm, id: pm.id ?? createId(), evidenceSourceIds: pm.evidenceSourceIds ?? [], changeSummary: pm.changeSummary ?? "" };
+}
+
+function normalizePmHistory(pm: PmDraft | undefined, value: PmVersionHistoryEntry[] | undefined, updatedAt: string): PmVersionHistoryEntry[] {
+  const versions = Array.isArray(value) ? value.map((version) => ({
+    ...version,
+    pm: normalizePm(version.pm),
+  })) : [];
+  if (!versions.length && pm?.status === "approved") {
+    const initial = { ...pm, revisionNumber: pm.revisionNumber ?? 0 };
+    versions.push({
+      id: pm.id,
+      revisionNumber: initial.revisionNumber!,
+      approvedAt: pm.approvedAt ?? updatedAt,
+      changeSummary: null,
+      pm: initial,
+    });
+  }
+  return versions;
+}
+
+function savePmRecord(pm: PmDraft | undefined, savedHistory: PmVersionHistoryEntry[]): { pm: PmDraft | undefined; pmVersions: PmVersionHistoryEntry[] } {
+  const pmVersions = [...savedHistory];
+  let nextPm = pm ? { ...pm } : undefined;
+  if (nextPm?.status === "approved") {
+    const latest = pmVersions.at(-1);
+    if (latest && nextPm.baseRevisionNumber === undefined &&
+        JSON.stringify(pmContent(nextPm)) === JSON.stringify(pmContent(latest.pm)) &&
+        (nextPm.changeSummary?.trim() ?? "") === (latest.pm.changeSummary?.trim() ?? "")) {
+      nextPm = { ...latest.pm };
+    } else {
+      const expectedBase = latest?.revisionNumber;
+      if (latest && nextPm.baseRevisionNumber !== expectedBase) {
+        throw new Error("This PM revision is based on an older approved version. Reload the analysis before approving it.");
+      }
+      const revisionNumber = latest ? latest.revisionNumber + 1 : 0;
+      const changeSummary = nextPm.changeSummary?.trim() ?? "";
+      if (revisionNumber > 0 && !changeSummary) throw new Error("Summarize the changes in this PM revision before approval.");
+      const approvedAt = nextPm.approvedAt ?? new Date().toISOString();
+      nextPm = {
+        ...nextPm,
+        status: "approved",
+        approvedAt,
+        revisionNumber,
+        baseRevisionNumber: undefined,
+        changeSummary: revisionNumber > 0 ? changeSummary : undefined,
+      };
+      pmVersions.push({
+        id: createId(),
+        revisionNumber,
+        approvedAt,
+        changeSummary: revisionNumber > 0 ? changeSummary : null,
+        pm: { ...nextPm },
+      });
+    }
+  } else if (nextPm?.status === "draft" && pmVersions.length > 0) {
+    const latest = pmVersions.at(-1)!;
+    if (nextPm.baseRevisionNumber !== latest.revisionNumber) {
+      throw new Error("Start this PM revision from the current approved version before saving it.");
+    }
+  }
+  return { pm: nextPm, pmVersions };
+}
+
 export class LocalPrototypeStore implements PlannerDataStore {
   async load(): Promise<WorkspaceSnapshot> {
     const raw = window.localStorage.getItem(storageKey);
@@ -45,27 +110,12 @@ export class LocalPrototypeStore implements PlannerDataStore {
     }
     const loaded = parsed as WorkspaceSnapshot;
     const analyses = loaded.analyses.map((analysis) => {
-      const pm: PmDraft | undefined = analysis.pm ? {
-        ...analysis.pm,
-        id: analysis.pm.id ?? createId(),
-        evidenceSourceIds: analysis.pm.evidenceSourceIds ?? [],
-        changeSummary: analysis.pm.changeSummary ?? "",
-      } : undefined;
-      const pmVersions = Array.isArray(analysis.pmVersions) ? analysis.pmVersions : [];
-      const normalizedVersions = pmVersions.map((version) => ({
-        ...version,
-        pm: { ...version.pm, evidenceSourceIds: version.pm.evidenceSourceIds ?? [] },
-      }));
-      if (normalizedVersions.length === 0 && pm?.status === "approved") {
-        const initial = { ...pm, revisionNumber: pm.revisionNumber ?? 0 };
-        normalizedVersions.push({
-          id: pm.id,
-          revisionNumber: initial.revisionNumber!,
-          approvedAt: pm.approvedAt ?? analysis.updatedAt,
-          changeSummary: null,
-          pm: initial,
-        });
-      }
+      const pm: PmDraft | undefined = analysis.pm ? normalizePm(analysis.pm) : undefined;
+      const normalizedVersions = normalizePmHistory(pm, analysis.pmVersions, analysis.updatedAt);
+      const additionalPms: AdditionalPmPlan[] = Array.isArray(analysis.additionalPms) ? analysis.additionalPms.map((record) => {
+        const additionalPm = normalizePm(record.pm);
+        return { pm: additionalPm, pmVersions: normalizePmHistory(additionalPm, record.pmVersions, analysis.updatedAt) };
+      }) : [];
       return {
         ...analysis,
         rowVersion: analysis.rowVersion ?? 1,
@@ -73,6 +123,7 @@ export class LocalPrototypeStore implements PlannerDataStore {
         manualDocuments: analysis.manualDocuments ?? [],
         pm,
         pmVersions: normalizedVersions,
+        additionalPms,
       };
     });
     return { ...loaded, analyses, catalog: sampleCatalog, pmRevisionLifecycleEnabled: true };
@@ -81,49 +132,23 @@ export class LocalPrototypeStore implements PlannerDataStore {
   async saveAnalysis(analysis: PlannerAnalysis): Promise<WorkspaceSnapshot> {
     const current = await this.load();
     const previous = current.analyses.find((item) => item.id === analysis.id);
-    const pmVersions = [...(previous?.pmVersions ?? [])];
-    let pm = analysis.pm ? { ...analysis.pm } : undefined;
-    if (pm?.status === "approved") {
-      const latest = pmVersions.at(-1);
-      if (latest && pm.baseRevisionNumber === undefined &&
-          JSON.stringify(pmContent(pm)) === JSON.stringify(pmContent(latest.pm)) &&
-          (pm.changeSummary?.trim() ?? "") === (latest.pm.changeSummary?.trim() ?? "")) {
-        pm = { ...latest.pm };
-      } else {
-        const expectedBase = latest?.revisionNumber;
-        if (latest && pm.baseRevisionNumber !== expectedBase) {
-          throw new Error("This PM revision is based on an older approved version. Reload the analysis before approving it.");
-        }
-        const revisionNumber = latest ? latest.revisionNumber + 1 : 0;
-        const changeSummary = pm.changeSummary?.trim() ?? "";
-        if (revisionNumber > 0 && !changeSummary) throw new Error("Summarize the changes in this PM revision before approval.");
-        const approvedAt = pm.approvedAt ?? new Date().toISOString();
-        pm = {
-          ...pm,
-          status: "approved",
-          approvedAt,
-          revisionNumber,
-          baseRevisionNumber: undefined,
-          changeSummary: revisionNumber > 0 ? changeSummary : undefined,
-        };
-        pmVersions.push({
-          id: createId(),
-          revisionNumber,
-          approvedAt,
-          changeSummary: revisionNumber > 0 ? changeSummary : null,
-          pm: { ...pm },
-        });
-      }
-    } else if (pm?.status === "draft" && pmVersions.length > 0) {
-      const latest = pmVersions.at(-1)!;
-      if (pm.baseRevisionNumber !== latest.revisionNumber) {
-        throw new Error("Start this PM revision from the current approved version before saving it.");
-      }
-    }
+    const primary = savePmRecord(analysis.pm, previous?.pmVersions ?? []);
+    const requestedAdditional = analysis.additionalPms ?? [];
+    const requestedIds = new Set(requestedAdditional.map((record) => record.pm.id));
+    const mergedAdditional = [
+      ...requestedAdditional,
+      ...(previous?.additionalPms ?? []).filter((record) => !requestedIds.has(record.pm.id)),
+    ];
+    const previousAdditionalById = new Map((previous?.additionalPms ?? []).map((record) => [record.pm.id, record]));
+    const additionalPms = mergedAdditional.map((record) => {
+      const saved = savePmRecord(record.pm, previousAdditionalById.get(record.pm.id)?.pmVersions ?? record.pmVersions ?? []);
+      return { pm: saved.pm!, pmVersions: saved.pmVersions };
+    });
     const savedAnalysis = {
       ...analysis,
-      pm,
-      pmVersions,
+      pm: primary.pm,
+      pmVersions: primary.pmVersions,
+      additionalPms,
       rowVersion: Number(previous?.rowVersion ?? 0) + 1,
     };
     const next: WorkspaceSnapshot = {
