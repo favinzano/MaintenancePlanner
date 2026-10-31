@@ -29,3 +29,11 @@ Date: 2026-10-31.
 
 - Competitor evidence is a synthesis of earlier research and does not establish complete feature inventories or screen-by-screen behavior for either vendor.
 - No production readiness or deployment verdict is in scope for this comparison.
+
+## Refresh on 2026-10-31
+
+- Rebuilt `replica/diffs/plannermc-scope.csv` from the current `plannermc_spec=yes` rows in `replica/features.csv` and reran the installed parity tool. The result remains 55.6/100: two complete, six partial, and one incomplete must-have.
+- Updated `replica/parity.md` with current source-record and PM-reference evidence. The earlier source-to-PM recommendation is superseded because that slice is now implemented.
+- Added a layout status for each existing clone capture and recorded its dimensions. There are still no matching original workflow screenshots, so every per-screen layout score remains unavailable. The vendor evidence matrix still does not define one original application; behavior comparison remains unscored without an original-app walkthrough.
+- [Inference] The next architecture milestone is manual source intake and extraction locators, then external research. Relevant Q2/Q3 provider, data-transfer, file-format, and file-limit decisions remain prerequisites; this is a recommendation, not an approved ticket.
+- This refresh recalculated feature coverage and documented existing QA evidence only; it did not run browser/API QA.
