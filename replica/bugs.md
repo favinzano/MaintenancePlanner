@@ -19,7 +19,7 @@ Actual: axe 4.14.0 reported `scrollable-region-focusable` with serious impact. T
 
 Evidence: The first automated run failed this rule in both PM screen scans. After adding a named, focusable region, the targeted test passed.
 
-Status: Fixed in the current worktree. Commit reference will be recorded after commit.
+Status: Fixed in commit `be07314`.
 
 ### QA-04: Older save notices could hide a newer confirmation
 
@@ -38,7 +38,7 @@ Actual: The expected PM draft confirmation was absent by the time the automated 
 
 Evidence: The first automated run failed to find the PM draft confirmation after the save action. The regression check now observes the `role=status` message and verifies the reloaded draft. The full suite passed after the timer fix.
 
-Status: Fixed in the current worktree. Commit reference will be recorded after commit.
+Status: Fixed in commit `be07314`.
 
 ## Other reproduced checks
 

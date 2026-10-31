@@ -1,6 +1,6 @@
 # Test plan: PlannerMC
 
-Build: dirty `main` worktree, 2026-10-31  Env: Chrome, local UI `:4173`, authenticated Fastify API and Supabase development project
+Build: `be07314`, 2026-10-31  Env: Chrome, local UI `:4173`, authenticated Fastify API and Supabase development project. Playwright automation ran in isolated local-prototype mode.
 
 This pass covers the authenticated data flow through saving a QA-only PM draft. Earlier prototype and API-smoke results are labeled as prior evidence, not current-pass reruns.
 
