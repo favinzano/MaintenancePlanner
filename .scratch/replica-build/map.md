@@ -36,7 +36,7 @@ Date: 2026-10-31.
 - Issue [05-pm-split-proposal](issues/05-pm-split-proposal.md) is resolved. The planner can author overflow actions, choose a boundary, review two PMs under the 15-step cap, and confirm or cancel. Both drafts persist independently and were verified in local E2E and authenticated `plannermc-dev` QA. Production and CMMS were not touched.
 - User approved the next bounded `/replica-build` slice: citations on frequency, duration, operating state, safety, task steps, and final verification, using reviewed applicable sources from the same analysis. Implementation is tracked in [06-field-level-pm-evidence-citations](issues/06-field-level-pm-evidence-citations.md); do not infer support or source locators.
 - Issue [06-field-level-pm-evidence-citations](issues/06-field-level-pm-evidence-citations.md) is resolved. Local automated tests and authenticated synthetic `plannermc-dev` QA verified citation authoring, persistence/read-back, step remapping, approval, and retained snapshots. A JSONB key-order false negative in the server comparator was corrected and regression-tested. One explicitly labeled QA analysis remains in development; production and CMMS were untouched.
-- Updated [`replica/parity.md`](../../replica/parity.md) to 66.7/100 against the PlannerMC MVP must-haves. This is not vendor-product parity.
+- Refreshed [`replica/parity.md`](../../replica/parity.md) and `replica/diffs/plannermc-scope.csv` after issue 06. Score remains 66.7/100 against PlannerMC MVP must-haves because source provenance is still partial while external-source citations are deferred. This is not vendor-product parity.
 - Ran the local `replica-diff` parity script against the PlannerMC-only matrix at `replica/diffs/plannermc-scope.csv`. Four of nine must-haves are complete; five remain incomplete. No original workflow captures exist for layout or behavior comparison.
 
 ## Fog
@@ -47,4 +47,4 @@ Date: 2026-10-31.
 
 ## Next flow step
 
-Issue 06 is resolved. The next workflow step is `/replica-diff` to refresh the gap ranking; the remaining build candidates depend on an operational catalog source or deferred language/provider policy decisions.
+Issue 06 is resolved and the `/replica-diff` ranking is refreshed: 66.7/100, four of nine must-haves complete. The next workflow step is `/replica-build` to select an unblocked remaining gap. Language/provider decisions and the operational catalog source remain dependencies.

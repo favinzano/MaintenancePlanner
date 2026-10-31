@@ -4,13 +4,15 @@ Assessment date: 2026-10-31
 
 Assessment basis: `replica/features.csv`, the PlannerMC MVP specification, the current implementation notes, and QA evidence in `replica/test-plan.md`.
 
+Refresh: rerun after issue 06 (field-level PM evidence citations) on 2026-10-31. The result remains 66.7/100 because source provenance is still partial while external-source references are deferred; the must-have count remains four of nine complete.
+
 ## Result
 
 **PlannerMC MVP scope coverage: 66.7 / 100.** This score measures implementation coverage against the nine rows marked `plannermc_spec=yes` in the feature matrix. It is not a parity score against iMPS, Prometheus GWOS-AI, or another original application.
 
 All nine scored requirements are marked `must`. Four are complete, four are partial, and one is not implemented. The `replica-diff` parity tool assigns weight 3 to each must-have and counts `yes` as full credit, `partial` as half credit, and `no` as zero: 18 of 27 possible points, or 66.7%. The tool therefore reports **not shippable against the tracked MVP scope**, because five must-haves remain incomplete. This is separate from production readiness.
 
-The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-scope.csv), regenerated from the nine PlannerMC requirements in [`features.csv`](features.csv). `features.csv` is the broader vendor-evidence matrix and does not use the parity tool's input schema. The scope matrix sets `original=yes` as a tool-compatible inclusion flag for PlannerMC's own requirements; it does not claim an original vendor has these features. Running the tool against this scoped matrix returned 66.7, four of nine must-haves done, and five must-haves incomplete.
+The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-scope.csv), derived from the nine PlannerMC requirements in [`features.csv`](features.csv). `features.csv` is the broader vendor-evidence matrix and does not use the parity tool's input schema. The scope matrix sets `original=yes` as a tool-compatible inclusion flag for PlannerMC's own requirements; it does not claim an original vendor has these features. Running the tool against this scoped matrix returned 66.7, four of nine must-haves done, and five must-haves incomplete. The matrix notes include field-level citations, although that requirement remains partial because external-source references are deferred.
 
 ## Requirement coverage
 
@@ -70,7 +72,7 @@ The current QA evidence is summarized in [`test-plan.md`](test-plan.md). It reco
 
 ## Recommended next workflow step
 
-**[Inference] Run `/replica-diff` again to refresh the gap ranking before selecting another build slice.** The next build choice depends on resolving the operational catalog source or separate language/provider decisions; research, technical generation, and speech remain deferred. Field citations record planner selection and do not establish technical correctness.
+**[Inference] Continue with `/replica-build` by selecting an unblocked remaining gap.** The highest-ranked bilingual text/voice requirement depends on language and provider decisions; speech remains deferred under ADR 0002. The operational catalog is another partial gap whose source/provisioning decision is open. Research and technical generation remain deferred. Field citations record planner selection and do not establish technical correctness.
 
 Production uploads remain gated by capacity, numeric limits, backups, retention, and a restore test.
 
