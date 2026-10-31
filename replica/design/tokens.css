@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Geist Variable";
+  src: url("../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@theme {
+  --color-canvas: #0a0a0a;
+  --color-panel: #171717;
+  --color-panel-raised: #262626;
+  --color-panel-muted: #0f0f0f;
+  --color-border: #2f2f2f;
+  --color-border-input: #707070;
+  --color-foreground: #fafafa;
+  --color-muted: #a1a1a1;
+  --color-accent: #bcd3e0;
+  --color-accent-foreground: #101010;
+  --color-danger-foreground: #101010;
+  --color-ring: #9fc0d4;
+  --color-brand-cyan: #00a7ca;
+  --color-brand-green: #59bb4e;
+  --color-success: #88b294;
+  --color-danger: #ddadaa;
+  --color-warning: #f3c969;
+  --font-sans: "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --radius-panel: 14px;
+  --radius-pill: 999px;
+  --shadow-card: 0 8px 28px rgb(0 0 0 / 24%);
+  --shadow-popover: 0 18px 48px rgb(0 0 0 / 46%);
+  --animate-fade-in: fade-in 180ms cubic-bezier(.2, .8, .2, 1);
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
