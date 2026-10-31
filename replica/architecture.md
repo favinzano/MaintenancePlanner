@@ -1,13 +1,13 @@
-# PlannerMC architecture proposal
+# PlannerMC architecture baseline
 
-**Status:** architecture proposal, not an implementation decision record  
-**Date:** 2026-10-29  
+**Status:** MVP technical choices accepted; see [ADR 0001](../docs/adr/0001-supabase-auth-and-postgres.md)
+**Date:** 2026-10-31
 **Product scope:** `specs/001-plannermc-mvp/spec.md`  
 **Technical baseline:** `specs/001-plannermc-mvp/plan.md`
 
-This proposal carries forward the local technical plan. It does not close Q1–Q6, change product behavior, or establish that any component has been implemented. `schema.sql` contains the relational proposal.
+This document records the approved MVP technical choices and the remaining operational choices. It does not establish that a production project exists or that any service has been deployed. `schema.sql` is the broader relational proposal; `supabase/migrations/` contains the implemented planner-data subset for the current slice.
 
-**Stack summary:** React/Vite + TypeScript, Fastify + TypeScript, and one PostgreSQL database in a modular monolith; provider and deployment selections remain open where Q1–Q6 apply.
+**Stack summary:** one PlannerMC web/API application using React/Vite + TypeScript and Fastify + TypeScript, backed by managed Supabase Auth and PostgreSQL. External content providers and PlannerMC app hosting remain open where Q1–Q6 apply.
 
 ## Stack
 
@@ -17,13 +17,13 @@ This proposal carries forward the local technical plan. It does not close Q1–Q
 | Styling | Tailwind CSS v4 with Vite and CSS `@theme` design tokens derived from the user-directed MacroCap reference | Carries forward the design-step decision. Semantic theme variables map the observed dark palette and Geist Variable to utilities; Radix Primitives and native controls cover accessible interactions. |
 | Application/API | Fastify + TypeScript + JSON Schema at the HTTP boundary | Carries forward D2/D3; schema validation stays at the boundary, while business rules remain in the domain layer. |
 | Domain and application | TypeScript modules in the same application | Carries forward the modular-monolith proposal and constitution requirement C3. No microservices. |
-| Database | PostgreSQL; relational ownership and relationships, JSONB for structured PM content, BYTEA for original documents | Carries forward D4 and the persistence/read-back requirements. BYTEA is conditional on Q1/Q3 storage and volume decisions; reconsider SQLite only if Q1 makes this an exclusively local application. |
+| Database | Managed Supabase PostgreSQL; relational ownership and relationships, JSONB for structured PM content, BYTEA for original documents | Accepted in ADR 0001. PostgreSQL is the source of truth. Exact production plan, file limit, backup retention, and recovery target remain open. |
 | ORM/query layer | Parameterized SQL through a small repository layer; no ORM selected | Avoids choosing an additional library before implementation. Revisit only if the chosen driver/repository approach creates a concrete need. |
-| Authentication | Server-managed session and adaptive password hashing | Carries forward D9. Account provisioning, recovery, and operations remain open under Q4. No public self-registration is added. |
+| Authentication | Supabase Auth with email and password; invitation-only accounts | Accepted in ADR 0001. Fastify verifies Supabase access-token claims, resolves the user's PlannerMC profile/workspace, and applies ownership checks. PlannerMC does not store password hashes or expose public registration. |
 | Extraction, research, generation, STT, TTS | Ports with provider adapters to be selected | Carries forward D5. Provider, data-transfer permission, cost, retention, and contract decisions remain open under Q2/Q5. |
 | Background work | Application-coordinated persisted work state in PostgreSQL; no separate queue initially | Carries forward section 5.4 of the technical plan. Long operations must not hold a database transaction open. Revisit if measured workload requires a worker/queue. |
-| File storage | PostgreSQL BYTEA for the initial proposal | One transactional store supports the required write/read-back check. Selection remains conditional on Q1/Q3; do not split storage without revisiting cross-store consistency. |
-| Hosting | Unselected | Q1 must decide local, company-hosted, or external deployment before production hosting, microphone security context, and operational session settings can be fixed. |
+| File storage | PostgreSQL `BYTEA` for original manuals | Accepted in ADR 0001. Store metadata and SHA-256 with the bytes; verify by read-back. Keep maximum file size open until set before production uploads. |
+| Hosting | Supabase-managed Auth and database; PlannerMC web/API hosting unselected | Q1 still needs to decide where Fastify and the web app run and which browsers/devices support voice. |
 | Payments, email, external scheduler | None in MVP | No current requirement supports adding these dependencies. |
 
 ## Application boundaries
@@ -32,7 +32,7 @@ Use one deployable application, divided by responsibility. These are internal mo
 
 | Module | Owns | Must not own |
 | --- | --- | --- |
-| Identity | Session resolution, account identity, workspace ownership, authorization context | Shared-work permissions or account provisioning decisions not in Q4 |
+| Identity | Supabase Auth identity verification, account identity, workspace ownership, authorization context | Shared-work permissions and catalog provisioning; accounts remain invitation-only and operator-managed |
 | Intake and sources | Original documents, extraction references, research results, source applicability and limitations | Planner decisions or final approval |
 | Asset registry | Equipment/sub-asset proposals, confirmed assets, duplicate warnings, update proposals | Automatic merging or hierarchy deeper than direct sub-assets |
 | Maintenance planning | PM candidates, grouping, frequency, duration, operating state, step count, split proposals | CMMS work-order creation or unsupported technical conclusions |
@@ -57,7 +57,7 @@ The proposed PostgreSQL schema contains **18 tables**. See [schema.sql](./schema
 
 ### Access rules
 
-Use **server-side data-layer ownership checks**, as proposed in D9. The client never supplies a trusted `owner_id`; the server derives it from the authenticated session. Repository methods must scope reads and writes by both `workspace_id` and `owner_id`, including document downloads, duplicate searches, child-resource lookups, pending decisions, and operation receipts. The composite foreign keys in `schema.sql` reinforce ownership consistency between related rows. Direct database access from the browser is not part of this architecture. No row-level security policy is selected for the initial proposal.
+Use server-side ownership checks. Supabase Auth owns credentials and user identity; the PlannerMC profile ID references `auth.users.id`. Fastify verifies the Supabase access token using Supabase's supported claim-verification API, then derives the user and workspace from the server-side profile. The client never supplies a trusted `owner_id` or `workspace_id`. Repository methods scope reads and writes by both `workspace_id` and `owner_id`, including document downloads, duplicate searches, child-resource lookups, pending decisions, and operation receipts. Composite foreign keys reinforce ownership consistency. Browser clients do not connect directly to PostgreSQL or write PlannerMC tables. Privileged keys and database credentials stay on the server.
 
 Every user-owned row carries `owner_id` and `workspace_id`, except the user identity/preferences and workspace/catalog roots, whose ownership is represented by their identity or workspace relationship. All timestamps use `timestamptz` and UTC. The server updates `updated_at` on every mutation. Draft edits increment `row_version`; formal revision numbers are assigned only when approving.
 
@@ -74,12 +74,16 @@ Every user-owned row carries `owner_id` and `workspace_id`, except the user iden
 
 ### API contract
 
-Proposed JSON API. All routes require the authenticated session unless marked otherwise. `owner_id` and `workspace_id` are resolved on the server. Mutations carry an `operation_id`; edits also carry `expected_row_version`; decisions identify the presented resource/version and digest. Responses use the local plan's outcomes: `completed`, `awaitingDecision`, `failed`, `conflict`, or `resultUnverified`, with resource/version, issues, valid next actions, English UI message key, localized conversational explanation, and verification/operation metadata as applicable.
+The table describes the target API. Authentication actions use the Supabase Auth client directly; the current backend slice implements `GET /api/workspace`, `POST /api/analyses`, `PUT /api/analyses/{analysisId}`, and `GET /api/health`. Other rows are later routes, not implemented endpoints. `owner_id` and `workspace_id` are resolved on the server. Mutations carry an `operation_id`; edits also carry `expected_row_version`; decisions identify the presented resource/version and digest. Responses use the local plan's outcomes: `completed`, `awaitingDecision`, `failed`, `conflict`, or `resultUnverified`, with resource/version, issues, valid next actions, English UI message key, localized conversational explanation, and verification/operation metadata as applicable.
 
 | Method and path | Action / flow | Caller | Input → output | Key checks |
 | --- | --- | --- | --- | --- |
-| `POST /api/session` | Sign in | Public | Username/password → session and preferences | Never disclose whether another account exists. Account provisioning/recovery is Q4. |
-| `DELETE /api/session` | Sign out | Authenticated | Session → cleared session | Revoke the caller's session only. |
+| `supabase.auth.signInWithPassword()` | Sign in | Public | Email/password → Supabase Auth session | Use a generic authentication failure; do not disclose whether another account exists. No public sign-up route. |
+| `supabase.auth.signOut()` | Sign out | Authenticated | Session → cleared session | Revoke or clear the caller's Supabase Auth session only. |
+| `GET /api/health` | API health | Public | None → service status | Does not expose environment values or account data. |
+| `GET /api/workspace` | Load workspace catalog and analyses | Authenticated | None → catalog and owned analyses | Fastify verifies the token and scopes data through the server-side profile. |
+| `POST /api/analyses` | Create analysis | Authenticated | `operation_id`, analysis, expected row version 0 → verified workspace snapshot | Validate catalog ownership, data shape, and the planner-data slice. |
+| `PUT /api/analyses/{analysisId}` | Save analysis | Authenticated | `operation_id`, analysis, expected row version → verified workspace snapshot | Atomic transaction, owner/workspace scoping, idempotency receipt, optimistic version check, and post-commit read-back. |
 | `GET /api/me/preferences` | Read language preference | Authenticated | None → preference | Resolve user from session. |
 | `PUT /api/me/preferences/conversation-language` | Set es/en preference | Authenticated | `language`, `operation_id` → persisted preference | Verify by read-back; UI/document language remains English. |
 | `GET /api/catalog/locations` | Load preconfigured locations | Authenticated | Optional search → owned-workspace locations | Catalog provisioning is not an MVP administration flow. |
@@ -109,7 +113,7 @@ Proposed JSON API. All routes require the authenticated session unless marked ot
 
 Inbound webhooks: none. Outbound webhooks: none. Periodic jobs: none. Long-running analysis/research work may resume from persisted analysis state and return its processing status; its provider-specific execution policy remains open under Q2/Q3. No separate queue is proposed at this stage.
 
-The catalog above has **28 proposed API routes**. This count is for the route proposals in this document, not evidence of implemented endpoints.
+This table combines target API routes and Supabase Auth client operations. The implemented Fastify route subset is listed in the paragraph above; the rest remains planned.
 
 ## The parts that need explicit handling
 
@@ -120,20 +124,20 @@ The catalog above has **28 proposed API routes**. This count is for the route pr
 - **Search and evidence:** no vector database initially (D7). Preserve source URI, model/applicability, locator, extraction gaps and field-to-source links. Retrieval failure is distinct from no matching source.
 - **AI/content safety:** provider output is an untrusted candidate. Validate structure and source references; it has no write permission. A planner decision is linked to the exact presented version and does not make unsupported evidence true.
 - **Realtime/offline:** neither is specified. Browser edits must handle reload/recovery and concurrent-session conflicts; no offline-write guarantee is proposed.
-- **Multi-tenancy:** workspace plus owner scoping on all repository operations, foreign-key consistency, and no client-trusted ownership identifiers. Account/catalog provisioning stays Q4.
+- **Multi-tenancy:** workspace plus owner scoping on all repository operations, foreign-key consistency, and no client-trusted ownership identifiers. Account invitation policy is accepted; initial catalog provisioning remains open under Q4.
 - **Audio/privacy:** transient processing is the proposal until Q5. No voice recording archive, transcript history, or vendor retention assertion is made.
-- **Backups/recovery:** Q6. Do not claim that durable primary storage alone meets recovery expectations; no retention purge can be used to satisfy capacity without changing the agreed preservation behavior.
+- **Backups/recovery:** select a Supabase plan with database backups and complete a restore test before production uploads. Backup retention, capacity, and recovery targets remain open under Q6. Do not claim that durable primary storage alone meets recovery expectations; no retention purge can be used to satisfy the agreed preservation behavior.
 - **External service limits:** provider quotas, payload limits, timeouts, pricing, and retention stay undecided with Q2/Q3/Q5. Adapter failures must preserve the draft/evidence and offer a planner choice.
 
 ## Build order
 
 Each milestone lists proposed screens (S-IDs), tables, and routes. These S-IDs name PlannerMC screens proposed for planning and are not observed screens of an existing product.
 
-1. **Vertical slice, planner-data path:** Sign in → start one analysis from preconfigured location/area → record planner-provided equipment/task/frequency details → confirm selected assets → create a planner-authored PM draft → save, reload, approve, and copy. Screens: S01 Sign in, S02 Analysis intake, S03 Evidence and decisions, S04 Asset proposal, S05 PM editor/review. Tables: `workspaces`, `users`, `user_preferences`, `locations`, `areas`, `analyses`, `sources`, `planner_decisions`, `pending_issues`, `assets`, `pms`, `pm_versions`, `evidence_annotations`, `evidence_sources`, `operation_receipts`. Routes: session, preferences/catalog, create/read analysis and source, decisions, asset proposal/confirmation, create/read/edit/confirm PM version, copy. Keep the provider behind a port; this slice uses planner-entered content and does not claim to prove OCR or generation quality.
-2. **Must-haves: intake and evidence:** Add manual originals, extraction locators, external research adapter and limitations. Add `original_documents`; expand `sources` and `analyses`. Routes: document attach/read and research. Q1–Q3 must be resolved before production provider/storage/limits are selected.
+1. **Vertical slice, planner-data path:** Sign in → start one analysis from a preconfigured location/area → record planner-provided equipment/task/frequency details → confirm selected assets → create a planner-authored PM draft → save, reload, approve, and copy. Screens: S01 Sign in, S02 Analysis intake, S03 Evidence and decisions, S04 Asset proposal, S05 PM editor/review. Implement Supabase Auth identity and the Fastify/PostgreSQL persistence boundary. This slice uses planner-entered content and does not claim OCR or generation quality.
+2. **Must-haves: intake and evidence:** Add manual originals stored as PostgreSQL `BYTEA`, extraction locators, external research adapter and limitations. Add `original_documents`; expand `sources` and `analyses`. Routes: document attach/read and research. Q2–Q3 still gate real external providers, upload formats, and production file limits.
 3. **Must-haves: full asset and PM review:** Add duplicate warnings, update proposals, task/frequency/operating-state grouping, 15-step validation, requested split decisions, unresolved issue handling, optional technical validation, conflict review, revisions and draft deletion. Tables: `asset_change_proposals`, `technical_validations`; add/use `pending_issues`, `planner_decisions`, `pm_versions`, and `operation_receipts`. Routes: proposals, issue resolution, validations, revisions, deletion.
 4. **Must-haves: conversation and voice:** Add es/en text/voice using shared use cases, speech response, explicit confirmation context and English document rendering. Routes: conversation turns. Resolve Q1–Q3/Q5 first; do not persist audio/transcripts until Q5 is answered.
-5. **Acceptance and hardening:** Run the documented acceptance matrix alongside implementation, verify read-after-write, owner isolation, retries, concurrent edits, all failure paths, source traceability and the full no-manual/manual/planner-data paths. Resolve Q6 for production recovery acceptance. Use only recorded test evidence to claim completion.
+5. **Acceptance and hardening:** Run the documented acceptance matrix alongside implementation, verify read-after-write, owner isolation, retries, concurrent edits, all failure paths, source traceability and the full no-manual/manual/planner-data paths. Select the backup plan/retention and complete a restore test before production uploads. Use only recorded test evidence to claim completion.
 
 ## Three highest-risk areas
 
@@ -143,6 +147,6 @@ Each milestone lists proposed screens (S-IDs), tables, and routes. These S-IDs n
 
 ## Next flow step
 
-The first planner-data vertical slice is recorded in [build-log.md](./build-log.md). It uses a browser-local prototype adapter and does not resolve Q1–Q6 or establish production persistence, authentication, or provider behavior. The MacroCap Labs logo is referenced from the URL recorded in [brand-reference.md](./brand-reference.md); hosting and reuse terms remain unverified.
+The first planner-data vertical slice and the current backend implementation are recorded in [build-log.md](./build-log.md). The hosted development project and bounded Auth/API/persistence/ownership flow were smoke-verified; invitation email delivery remains unverified until SMTP is configured. No production project has been created. The MacroCap Labs logo is referenced from the URL recorded in [brand-reference.md](./brand-reference.md); hosting and reuse terms remain unverified.
 
-Next flow step: `/replica-backend`, after resolving the decisions needed for production persistence and identity. The existing browser-local adapter remains a prototype seam.
+The `/replica-backend` implementation is in progress. Production credentials, production account/catalog provisioning, and deployment remain unconfigured.

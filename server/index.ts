@@ -1,0 +1,536 @@
+import "dotenv/config";
+import Fastify, { type FastifyRequest } from "fastify";
+import { createClient } from "@supabase/supabase-js";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { Pool, type PoolClient } from "pg";
+import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft } from "../src/domain/planner.js";
+import { parseSaveBody, type SaveBody } from "./save-validation.js";
+
+type Principal = { userId: string; workspaceId: string };
+
+declare module "fastify" {
+  interface FastifyRequest {
+    principal: Principal | null;
+  }
+}
+
+const required = (name: string) => {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+};
+
+const supabaseUrl = required("SUPABASE_URL");
+const publishableKey = required("SUPABASE_PUBLISHABLE_KEY");
+const databaseUrl = new URL(required("DATABASE_URL"));
+const localDatabaseHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+const databaseHostname = databaseUrl.hostname.replace(/^\[|\]$/g, "");
+const isLocalDatabase = localDatabaseHosts.has(databaseHostname);
+const databaseSslCaFile = process.env.DATABASE_SSL_CA_FILE;
+if (!isLocalDatabase && !databaseSslCaFile) {
+  throw new Error("DATABASE_SSL_CA_FILE is required for remote PostgreSQL connections.");
+}
+databaseUrl.searchParams.delete("sslmode");
+const databaseSsl = databaseSslCaFile
+  ? { ca: readFileSync(databaseSslCaFile, "utf8"), rejectUnauthorized: true }
+  : undefined;
+const expectedIssuer = `${supabaseUrl.replace(/\/+$/, "")}/auth/v1`;
+const supabaseAuth = createClient(supabaseUrl, publishableKey, {
+  auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+});
+const pool = new Pool({
+  connectionString: databaseUrl.toString(),
+  ...(databaseSsl ? { ssl: databaseSsl } : {}),
+  max: 10,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 5_000,
+});
+const app = Fastify({ logger: true, bodyLimit: 1_048_576 });
+app.decorateRequest("principal", null);
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const workflowStages = ["intake", "awaitingReview", "assetsReview", "pmReview"] as const;
+
+function digest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+async function authenticate(request: FastifyRequest, reply: { code: (n: number) => typeof reply; send: (body: unknown) => unknown }) {
+  const header = request.headers.authorization;
+  const match = typeof header === "string" ? /^Bearer\s+(.+)$/i.exec(header) : null;
+  if (!match) return reply.code(401).send({ message: "Sign in to access this workspace." });
+
+  const { data, error } = await supabaseAuth.auth.getClaims(match[1]);
+  const claims = data?.claims as Record<string, unknown> | undefined;
+  const userId = claims?.sub;
+  if (error || typeof userId !== "string" || !uuidPattern.test(userId) ||
+      claims?.role !== "authenticated" || claims?.aud !== "authenticated" || claims?.iss !== expectedIssuer) {
+    return reply.code(401).send({ message: "Your session is invalid or expired. Sign in again." });
+  }
+  const { rows } = await pool.query<{ id: string; workspace_id: string }>(
+    "SELECT id, workspace_id FROM public.users WHERE id = $1 LIMIT 1",
+    [userId],
+  );
+  if (!rows[0]) return reply.code(403).send({ message: "This account is not provisioned for a PlannerMC workspace." });
+  request.principal = { userId: rows[0].id, workspaceId: rows[0].workspace_id };
+}
+
+function principal(request: FastifyRequest): Principal {
+  if (!request.principal) throw Object.assign(new Error("Sign in to access this workspace."), { statusCode: 401 });
+  return request.principal;
+}
+
+async function loadCatalog(owner: Principal): Promise<CatalogLocation[]> {
+  const { rows } = await pool.query<{ id: string; name_en: string; area_id: string; area_name: string }>(
+    `SELECT l.id, l.name_en, a.id AS area_id, a.name_en AS area_name
+       FROM public.locations l
+       JOIN public.areas a ON a.location_id = l.id AND a.workspace_id = l.workspace_id
+       JOIN public.users u ON u.workspace_id = l.workspace_id
+      WHERE u.id = $1 AND l.workspace_id = $2
+      ORDER BY l.name_en, a.name_en`,
+    [owner.userId, owner.workspaceId],
+  );
+  const locations = new Map<string, CatalogLocation>();
+  for (const row of rows) {
+    const location = locations.get(row.id) ?? { id: row.id, name: row.name_en, areas: [] };
+    location.areas.push({ id: row.area_id, name: row.area_name });
+    locations.set(row.id, location);
+  }
+  return [...locations.values()];
+}
+
+async function loadAnalysis(owner: Principal, analysisId: string): Promise<PlannerAnalysis | null> {
+  const { rows } = await pool.query<{
+    id: string; location_id: string; area_id: string; processing_stage: string;
+    equipment_name: string; original_equipment_name: string; manufacturer: string; model: string;
+    planner_notes: string; evidence_decision: PlannerAnalysis["evidenceDecision"];
+    row_version: number; created_at: Date; updated_at: Date;
+  }>(
+    `SELECT id, location_id, area_id, processing_stage, equipment_name,
+            original_equipment_name, manufacturer, model, planner_notes,
+            evidence_decision, row_version, created_at, updated_at
+       FROM public.analyses
+      WHERE id = $1 AND owner_id = $2 AND workspace_id = $3`,
+    [analysisId, owner.userId, owner.workspaceId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  const assetsResult = await pool.query<{
+    id: string; kind: "equipment" | "subAsset"; name_en: string; original_name: string | null; confirmed_at: Date | null;
+  }>(
+    `SELECT id, kind, name_en, original_name, confirmed_at
+       FROM public.assets
+      WHERE analysis_id = $1 AND owner_id = $2 AND workspace_id = $3
+      ORDER BY CASE WHEN kind = 'equipment' THEN 0 ELSE 1 END, created_at, id`,
+    [analysisId, owner.userId, owner.workspaceId],
+  );
+  const assets: AssetProposal[] = assetsResult.rows.map((asset) => ({
+    id: asset.id,
+    kind: asset.kind === "equipment" ? "equipment" : "subasset",
+    name: asset.name_en,
+    sourceTerm: asset.original_name ?? "",
+    confirmed: Boolean(asset.confirmed_at),
+  }));
+
+  const sourceResult = await pool.query<{
+    id: string; title: string; locator: { kind?: unknown; text?: unknown } | null;
+    applicability: EvidenceApplicability; applicability_details: string; limitations: string[]; reviewed_at: Date | null;
+  }>(
+    `SELECT id, title, locator, applicability, applicability_details, limitations, reviewed_at
+       FROM public.sources
+      WHERE analysis_id = $1 AND owner_id = $2 AND workspace_id = $3 AND kind = 'plannerData'
+      LIMIT 1`,
+    [analysisId, owner.userId, owner.workspaceId],
+  );
+  const source = sourceResult.rows[0];
+  const plannerEvidence = source ? {
+    id: source.id,
+    kind: "plannerData" as const,
+    title: source.title,
+    locator: typeof source.locator?.text === "string" ? source.locator.text : "Planner notes",
+    applicability: source.applicability,
+    applicabilityDetails: source.applicability_details,
+    limitations: Array.isArray(source.limitations) ? source.limitations : [PLANNER_EVIDENCE_BASE_LIMITATION],
+    reviewedAt: source.reviewed_at?.toISOString(),
+  } : createPlannerEvidence(row.id);
+
+  const pmResult = await pool.query<{ pm_id: string; content: PmDraft | null }>(
+    `SELECT p.id AS pm_id, COALESCE(approved.content, draft.content) AS content
+       FROM public.pms p
+       JOIN public.assets a ON a.id = p.asset_id
+       LEFT JOIN public.pm_versions approved ON approved.id = p.current_approved_version_id
+       LEFT JOIN LATERAL (
+         SELECT content FROM public.pm_versions WHERE pm_id = p.id AND status = 'draft' LIMIT 1
+       ) draft ON true
+      WHERE a.analysis_id = $1 AND p.owner_id = $2 AND p.workspace_id = $3
+      ORDER BY p.updated_at DESC LIMIT 1`,
+    [analysisId, owner.userId, owner.workspaceId],
+  );
+  const pm = pmResult.rows[0]?.content ?? undefined;
+  const stageIndex = Math.max(0, workflowStages.indexOf(row.processing_stage as typeof workflowStages[number]));
+  return {
+    id: row.id,
+    rowVersion: row.row_version,
+    locationId: row.location_id,
+    areaId: row.area_id,
+    equipmentName: row.equipment_name,
+    originalEquipmentName: row.original_equipment_name,
+    manufacturer: row.manufacturer,
+    model: row.model,
+    plannerNotes: row.planner_notes,
+    plannerEvidence,
+    evidenceDecision: row.evidence_decision,
+    assets,
+    pm: pm ? { ...pm, id: pm.id ?? pmResult.rows[0].pm_id, evidenceSourceIds: pm.evidenceSourceIds ?? [] } : undefined,
+    stage: stageIndex,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+async function loadWorkspace(owner: Principal, currentAnalysisId?: string): Promise<{ analyses: PlannerAnalysis[]; currentAnalysisId: string | null; catalog: CatalogLocation[] }> {
+  const ids = await pool.query<{ id: string }>(
+    `SELECT id FROM public.analyses
+      WHERE owner_id = $1 AND workspace_id = $2
+      ORDER BY updated_at DESC, id`,
+    [owner.userId, owner.workspaceId],
+  );
+  const analyses: PlannerAnalysis[] = [];
+  for (const item of ids.rows) {
+    const loaded = await loadAnalysis(owner, item.id);
+    if (loaded) analyses.push(loaded);
+  }
+  const selected = currentAnalysisId && analyses.some((item) => item.id === currentAnalysisId)
+    ? currentAnalysisId
+    : analyses[0]?.id ?? null;
+  return { analyses, currentAnalysisId: selected, catalog: await loadCatalog(owner) };
+}
+
+function canonicalAnalysis(analysis: PlannerAnalysis) {
+  const pm = analysis.pm ? {
+    id: analysis.pm.id,
+    title: analysis.pm.title,
+    assetId: analysis.pm.assetId,
+    frequency: analysis.pm.frequency,
+    durationMinutes: analysis.pm.durationMinutes,
+    operatingState: analysis.pm.operatingState,
+    safetyPrecautions: analysis.pm.safetyPrecautions,
+    unresolvedSafetyAcknowledged: analysis.pm.unresolvedSafetyAcknowledged,
+    taskSteps: analysis.pm.taskSteps,
+    finalVerification: analysis.pm.finalVerification,
+    evidenceSourceIds: analysis.pm.evidenceSourceIds,
+    status: analysis.pm.status,
+  } : null;
+  return {
+    id: analysis.id,
+    locationId: analysis.locationId,
+    areaId: analysis.areaId,
+    equipmentName: analysis.equipmentName,
+    originalEquipmentName: analysis.originalEquipmentName,
+    manufacturer: analysis.manufacturer,
+    model: analysis.model,
+    plannerNotes: analysis.plannerNotes,
+    plannerEvidence: analysis.plannerEvidence,
+    evidenceDecision: analysis.evidenceDecision,
+    stage: analysis.stage,
+    assets: analysis.assets.map((asset) => ({ ...asset })).sort((a, b) => a.id.localeCompare(b.id)),
+    pm,
+  };
+}
+
+async function persistAnalysis(owner: Principal, body: SaveBody, creating: boolean): Promise<{ analysis: PlannerAnalysis; workspace: Awaited<ReturnType<typeof loadWorkspace>> }> {
+  const { analysis, expectedRowVersion, operationId } = body;
+  if (creating !== (expectedRowVersion === 0)) throw Object.assign(new Error("The analysis version is invalid."), { statusCode: 409 });
+  if (analysis.pm) {
+    const confirmed = analysis.assets.filter((asset) => asset.confirmed);
+    if (!confirmed.some((asset) => asset.id === analysis.pm?.assetId)) {
+      throw Object.assign(new Error("The PM must reference an asset confirmed in this analysis."), { statusCode: 422 });
+    }
+    if (analysis.pm.status === "approved") {
+      const issues = pmApprovalIssues(analysis.pm, confirmed);
+      if (issues.length) throw Object.assign(new Error(issues.join(" ")), { statusCode: 422 });
+    }
+  }
+
+  const client: PoolClient = await pool.connect();
+  const requestDigest = digest({ analysis: canonicalAnalysis(analysis), expectedRowVersion });
+  let expectedStored: PlannerAnalysis | null = null;
+  try {
+    await client.query("BEGIN");
+    const priorOperation = await client.query<{ request_digest: string }>(
+      `SELECT request_digest FROM public.operation_receipts
+        WHERE owner_id = $1 AND workspace_id = $2 AND operation_id = $3 FOR UPDATE`,
+      [owner.userId, owner.workspaceId, operationId],
+    );
+    if (priorOperation.rows[0]) {
+      if (priorOperation.rows[0].request_digest !== requestDigest) {
+        throw Object.assign(new Error("This operation ID was already used for a different save."), { statusCode: 409 });
+      }
+      await client.query("COMMIT");
+      const replayed = await loadAnalysis(owner, analysis.id);
+      if (!replayed) throw Object.assign(new Error("The saved result could not be verified."), { statusCode: 503 });
+      return { analysis: replayed, workspace: await loadWorkspace(owner, analysis.id) };
+    }
+
+    const existing = await client.query<{ row_version: number }>(
+      `SELECT row_version FROM public.analyses
+        WHERE id = $1 AND owner_id = $2 AND workspace_id = $3 FOR UPDATE`,
+      [analysis.id, owner.userId, owner.workspaceId],
+    );
+    if ((existing.rows[0]?.row_version ?? 0) !== expectedRowVersion) {
+      throw Object.assign(new Error("This analysis changed in another tab or session. Reload it and review the saved version before continuing."), { statusCode: 409 });
+    }
+    const area = await client.query(
+      `SELECT 1 FROM public.areas
+        WHERE id = $1 AND location_id = $2 AND workspace_id = $3`,
+      [analysis.areaId, analysis.locationId, owner.workspaceId],
+    );
+    if (!area.rowCount) throw Object.assign(new Error("The selected location and area are not configured for this workspace."), { statusCode: 422 });
+
+    const nextRowVersion = expectedRowVersion + 1;
+    const stage = workflowStages[analysis.stage];
+    if (existing.rows[0]) {
+      const result = await client.query(
+        `UPDATE public.analyses
+            SET location_id = $4, area_id = $5, processing_stage = $6,
+                equipment_name = $7, original_equipment_name = $8,
+                manufacturer = $9, model = $10, planner_notes = $11,
+                evidence_decision = $12, row_version = $13, updated_at = now()
+          WHERE id = $1 AND owner_id = $2 AND workspace_id = $3
+            AND row_version = $14 RETURNING id`,
+        [analysis.id, owner.userId, owner.workspaceId, analysis.locationId, analysis.areaId, stage,
+          analysis.equipmentName, analysis.originalEquipmentName, analysis.manufacturer, analysis.model,
+          analysis.plannerNotes, analysis.evidenceDecision, nextRowVersion, expectedRowVersion],
+      );
+      if (!result.rowCount) throw Object.assign(new Error("This analysis changed while you were saving. Reload and review the current version."), { statusCode: 409 });
+    } else {
+      await client.query(
+        `INSERT INTO public.analyses
+          (id, owner_id, workspace_id, location_id, area_id, processing_stage,
+           equipment_name, original_equipment_name, manufacturer, model, planner_notes,
+           evidence_decision, row_version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [analysis.id, owner.userId, owner.workspaceId, analysis.locationId, analysis.areaId, stage,
+          analysis.equipmentName, analysis.originalEquipmentName, analysis.manufacturer, analysis.model,
+          analysis.plannerNotes, analysis.evidenceDecision, nextRowVersion],
+      );
+    }
+
+    const priorSource = await client.query<{ id: string }>(
+      `SELECT id FROM public.sources
+        WHERE analysis_id = $1 AND owner_id = $2 AND workspace_id = $3 AND kind = 'plannerData'
+        FOR UPDATE`,
+      [analysis.id, owner.userId, owner.workspaceId],
+    );
+    if (priorSource.rows[0] && priorSource.rows[0].id !== analysis.plannerEvidence?.id) {
+      throw Object.assign(new Error("The planner source changed in another session. Reload the analysis and review it before saving."), { statusCode: 409 });
+    }
+    const sourceIdOwner = await client.query<{ analysis_id: string }>(
+      `SELECT analysis_id FROM public.sources WHERE id = $1 FOR UPDATE`,
+      [analysis.plannerEvidence?.id],
+    );
+    if (sourceIdOwner.rows[0] && sourceIdOwner.rows[0].analysis_id !== analysis.id) {
+      throw Object.assign(new Error("This planner source identifier is already in use. Reload the analysis and try again."), { statusCode: 409 });
+    }
+    if (analysis.plannerEvidence) {
+      await client.query(
+        `INSERT INTO public.sources
+          (id, analysis_id, owner_id, workspace_id, kind, original_text, title, locator,
+           applicability, applicability_details, limitations, reviewed_at)
+         VALUES ($1,$2,$3,$4,'plannerData',$5,$6,$7::jsonb,$8,$9,$10::jsonb,$11)
+         ON CONFLICT (analysis_id) WHERE kind = 'plannerData'
+         DO UPDATE SET original_text = EXCLUDED.original_text, title = EXCLUDED.title,
+           locator = EXCLUDED.locator, applicability = EXCLUDED.applicability,
+           applicability_details = EXCLUDED.applicability_details,
+           limitations = EXCLUDED.limitations, reviewed_at = EXCLUDED.reviewed_at, updated_at = now()`,
+        [analysis.plannerEvidence.id, analysis.id, owner.userId, owner.workspaceId, analysis.plannerNotes,
+          analysis.plannerEvidence.title, JSON.stringify({ kind: "plannerNotes", text: analysis.plannerEvidence.locator }),
+          analysis.plannerEvidence.applicability, analysis.plannerEvidence.applicabilityDetails,
+          JSON.stringify(analysis.plannerEvidence.limitations), analysis.plannerEvidence.reviewedAt ?? null],
+      );
+    }
+
+    const equipment = analysis.assets.find((asset) => asset.kind === "equipment");
+    if (analysis.assets.filter((asset) => asset.kind === "equipment").length > 1) {
+      throw Object.assign(new Error("An analysis may contain only one equipment asset."), { statusCode: 422 });
+    }
+    for (const asset of analysis.assets) {
+      if (asset.kind === "subasset" && (!equipment || equipment.id === asset.id)) {
+        throw Object.assign(new Error("Each direct sub-asset must belong to the equipment root."), { statusCode: 422 });
+      }
+      const result = await client.query(
+        `INSERT INTO public.assets
+          (id, analysis_id, owner_id, workspace_id, parent_asset_id, kind,
+           location_id, area_id, original_name, name_en, confirmed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $11 THEN now() ELSE NULL END)
+         ON CONFLICT (id) DO UPDATE SET
+           parent_asset_id = EXCLUDED.parent_asset_id, kind = EXCLUDED.kind,
+           location_id = EXCLUDED.location_id, area_id = EXCLUDED.area_id,
+           original_name = EXCLUDED.original_name, name_en = EXCLUDED.name_en,
+           confirmed_at = CASE WHEN EXCLUDED.confirmed_at IS NULL THEN NULL
+                               ELSE COALESCE(public.assets.confirmed_at, EXCLUDED.confirmed_at) END,
+           row_version = public.assets.row_version + 1, updated_at = now()
+         WHERE public.assets.owner_id = EXCLUDED.owner_id
+           AND public.assets.workspace_id = EXCLUDED.workspace_id
+           AND public.assets.analysis_id = EXCLUDED.analysis_id
+         RETURNING id`,
+        [asset.id, analysis.id, owner.userId, owner.workspaceId,
+          asset.kind === "equipment" ? null : equipment?.id ?? null,
+          asset.kind === "equipment" ? "equipment" : "subAsset", analysis.locationId, analysis.areaId,
+          asset.sourceTerm || null, asset.name, asset.confirmed],
+      );
+      if (!result.rowCount) throw Object.assign(new Error("An asset ID is already in use outside this analysis."), { statusCode: 409 });
+    }
+    const assetIds = analysis.assets.map((asset) => asset.id);
+    await client.query(
+      `DELETE FROM public.assets
+        WHERE analysis_id = $1 AND owner_id = $2 AND workspace_id = $3
+          AND NOT (id = ANY($4::uuid[])) AND kind = 'subAsset'`,
+      [analysis.id, owner.userId, owner.workspaceId, assetIds],
+    );
+
+    if (analysis.pm) await persistPm(client, owner, analysis);
+
+    await client.query(
+      `INSERT INTO public.operation_receipts
+        (owner_id, workspace_id, operation_id, request_digest, result_digest,
+         resource_kind, resource_id, outcome, result_summary)
+       VALUES ($1,$2,$3,$4,$5,'analysis',$6,'completed',$7::jsonb)`,
+      [owner.userId, owner.workspaceId, operationId, requestDigest, digest({ id: analysis.id, rowVersion: nextRowVersion }),
+        analysis.id, JSON.stringify({ rowVersion: nextRowVersion })],
+    );
+    await client.query("COMMIT");
+
+    const readBack = await loadAnalysis(owner, analysis.id);
+    if (!readBack || JSON.stringify(canonicalAnalysis(readBack)) !== JSON.stringify(canonicalAnalysis(analysis))) {
+      throw Object.assign(new Error("The database write completed, but its read-back did not match. The result is unverified."), { statusCode: 503 });
+    }
+    expectedStored = readBack;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  if (!expectedStored) throw Object.assign(new Error("The save could not be verified."), { statusCode: 503 });
+  return { analysis: expectedStored, workspace: await loadWorkspace(owner, expectedStored.id) };
+}
+
+async function persistPm(client: PoolClient, owner: Principal, analysis: PlannerAnalysis) {
+  const pm = analysis.pm as PmDraft;
+  const existing = await client.query<{ current_approved_version_id: string | null }>(
+    `SELECT current_approved_version_id FROM public.pms
+      WHERE id = $1 AND owner_id = $2 AND workspace_id = $3 FOR UPDATE`,
+    [pm.id, owner.userId, owner.workspaceId],
+  );
+  const inserted = await client.query(
+    `INSERT INTO public.pms (id, asset_id, owner_id, workspace_id)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (id) DO UPDATE SET asset_id = EXCLUDED.asset_id, updated_at = now()
+     WHERE public.pms.owner_id = EXCLUDED.owner_id AND public.pms.workspace_id = EXCLUDED.workspace_id
+     RETURNING id`,
+    [pm.id, pm.assetId, owner.userId, owner.workspaceId],
+  );
+  if (!inserted.rowCount) throw Object.assign(new Error("This PM belongs to another workspace."), { statusCode: 409 });
+
+  const draft = await client.query<{ id: string }>(
+    `SELECT id FROM public.pm_versions WHERE pm_id = $1 AND status = 'draft' FOR UPDATE`, [pm.id],
+  );
+  const approvedId = existing.rows[0]?.current_approved_version_id;
+  if (approvedId) {
+    const approved = await client.query<{ content: PmDraft }>(
+      "SELECT content FROM public.pm_versions WHERE id = $1 AND pm_id = $2", [approvedId, pm.id],
+    );
+    if (pm.status !== "approved" || !approved.rows[0] ||
+        JSON.stringify(canonicalPm(approved.rows[0].content)) !== JSON.stringify(canonicalPm(pm))) {
+      throw Object.assign(new Error("An approved PM version is immutable. Start a new revision in a later PlannerMC flow."), { statusCode: 409 });
+    }
+    return;
+  }
+
+  if (pm.status === "approved") {
+    const approvedAt = new Date().toISOString();
+    const content = { ...pm, status: "approved" as const, approvedAt };
+    let versionId: string;
+    if (draft.rows[0]) {
+      versionId = draft.rows[0].id;
+      await client.query(
+        `UPDATE public.pm_versions
+            SET status = 'confirmedApproved', revision_number = 0, content = $2::jsonb,
+                approved_by = $3, approved_at = $4, row_version = row_version + 1, updated_at = now()
+          WHERE id = $1 AND pm_id = $5 AND status = 'draft'`,
+        [versionId, JSON.stringify(content), owner.userId, approvedAt, pm.id],
+      );
+    } else {
+      versionId = randomUUID();
+      await client.query(
+        `INSERT INTO public.pm_versions
+          (id, pm_id, owner_id, workspace_id, status, revision_number, content, approved_by, approved_at)
+         VALUES ($1,$2,$3,$4,'confirmedApproved',0,$5::jsonb,$6,$7)`,
+        [versionId, pm.id, owner.userId, owner.workspaceId, JSON.stringify(content), owner.userId, approvedAt],
+      );
+    }
+    await client.query(
+      "UPDATE public.pms SET current_approved_version_id = $1, updated_at = now() WHERE id = $2 AND owner_id = $3 AND workspace_id = $4",
+      [versionId, pm.id, owner.userId, owner.workspaceId],
+    );
+    return;
+  }
+
+  if (draft.rows[0]) {
+    await client.query(
+      `UPDATE public.pm_versions SET content = $2::jsonb, row_version = row_version + 1, updated_at = now()
+        WHERE id = $1 AND pm_id = $3 AND owner_id = $4 AND workspace_id = $5 AND status = 'draft'`,
+      [draft.rows[0].id, JSON.stringify({ ...pm, approvedAt: undefined }), pm.id, owner.userId, owner.workspaceId],
+    );
+  } else {
+    await client.query(
+      `INSERT INTO public.pm_versions (pm_id, owner_id, workspace_id, content)
+       VALUES ($1,$2,$3,$4::jsonb)`,
+      [pm.id, owner.userId, owner.workspaceId, JSON.stringify({ ...pm, approvedAt: undefined })],
+    );
+  }
+}
+
+function canonicalPm(pm: PmDraft) {
+  const { approvedAt: _approvedAt, ...rest } = pm;
+  return { ...rest, evidenceSourceIds: pm.evidenceSourceIds ?? [] };
+}
+
+app.get("/api/health", async () => ({ status: "ok" }));
+app.get("/api/workspace", { preHandler: authenticate }, async (request) => loadWorkspace(principal(request)));
+app.post("/api/analyses", { preHandler: authenticate }, async (request, reply) => {
+  try {
+    const body = parseSaveBody(request.body);
+    const saved = await persistAnalysis(principal(request), body, true);
+    return saved.workspace;
+  } catch (error) {
+    const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 500;
+    request.log.error({ err: error }, "Planner analysis save failed");
+    return reply.code(statusCode).send({ message: error instanceof Error ? error.message : "The analysis could not be saved." });
+  }
+});
+app.put<{ Params: { id: string } }>("/api/analyses/:id", { preHandler: authenticate }, async (request, reply) => {
+  try {
+    const body = parseSaveBody(request.body);
+    if (request.params.id !== body.analysis.id) return reply.code(400).send({ message: "The analysis ID does not match the request path." });
+    const saved = await persistAnalysis(principal(request), body, false);
+    return saved.workspace;
+  } catch (error) {
+    const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 500;
+    request.log.error({ err: error }, "Planner analysis save failed");
+    return reply.code(statusCode).send({ message: error instanceof Error ? error.message : "The analysis could not be saved." });
+  }
+});
+
+const close = async () => {
+  await app.close();
+  await pool.end();
+};
+process.on("SIGINT", () => void close().finally(() => process.exit(0)));
+process.on("SIGTERM", () => void close().finally(() => process.exit(0)));
+
+const port = Number(process.env.API_PORT ?? 3001);
+await app.listen({ host: process.env.API_HOST ?? "127.0.0.1", port });

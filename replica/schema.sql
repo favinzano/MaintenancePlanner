@@ -1,6 +1,7 @@
--- PlannerMC proposed PostgreSQL schema.
--- Design artifact only: provider, deployment, limits and retention decisions remain open.
--- See specs/001-plannermc-mvp/plan.md Q1-Q6 and replica/architecture.md.
+-- PlannerMC relational schema proposal for Supabase PostgreSQL.
+-- Apply only through a reviewed Supabase migration. Production project settings,
+-- file limits, backup retention, and recovery targets remain open.
+-- See docs/adr/0001-supabase-auth-and-postgres.md and replica/architecture.md.
 
 CREATE TABLE workspaces (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -11,15 +12,12 @@ CREATE TABLE workspaces (
 );
 
 CREATE TABLE users (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE RESTRICT,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT,
-  username text NOT NULL CHECK (username = lower(username)),
-  password_hash text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (id, workspace_id)
 );
-CREATE UNIQUE INDEX users_username_unique ON users (username);
 CREATE INDEX users_workspace_idx ON users (workspace_id);
 
 CREATE TABLE user_preferences (
@@ -141,13 +139,16 @@ CREATE TABLE sources (
   kind text NOT NULL CHECK (kind IN ('manual', 'externalReference', 'plannerData')),
   original_document_id uuid,
   url text,
+  title text NOT NULL DEFAULT 'Planner-provided information',
   manufacturer text,
   model text,
   applicability text NOT NULL DEFAULT 'unknown'
-    CHECK (applicability IN ('applicable', 'differentVariant', 'unknown', 'notApplicable')),
+    CHECK (applicability IN ('applicable', 'different_variant', 'unknown', 'not_applicable')),
+  applicability_details text NOT NULL DEFAULT '',
   original_text text,
-  locator jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(locator) = 'object'),
-  limitations jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(limitations) = 'array'),
+  locator jsonb NOT NULL DEFAULT '{"kind":"plannerNotes","text":"Planner notes"}'::jsonb CHECK (jsonb_typeof(locator) = 'object'),
+  limitations jsonb NOT NULL DEFAULT '["Planner-provided; not independently verified."]'::jsonb CHECK (jsonb_typeof(limitations) = 'array'),
+  reviewed_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (id, owner_id, workspace_id),

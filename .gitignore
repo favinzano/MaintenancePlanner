@@ -1,5 +1,12 @@
 node_modules/
 dist/
+dist-server/
 .vite/
 *.tsbuildinfo
 .playwright-mcp/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+supabase/ssl/

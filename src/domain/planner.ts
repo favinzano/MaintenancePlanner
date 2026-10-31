@@ -10,7 +10,22 @@ export type AssetProposal = {
   confirmed: boolean;
 };
 
+export type EvidenceApplicability = "applicable" | "different_variant" | "unknown" | "not_applicable";
+export const PLANNER_EVIDENCE_BASE_LIMITATION = "Planner-provided; not independently verified.";
+
+export type PlannerEvidence = {
+  id: string;
+  kind: "plannerData";
+  title: string;
+  locator: string;
+  applicability: EvidenceApplicability;
+  applicabilityDetails: string;
+  limitations: string[];
+  reviewedAt?: string;
+};
+
 export type PmDraft = {
+  id: string;
   title: string;
   assetId: string;
   frequency: string;
@@ -20,6 +35,7 @@ export type PmDraft = {
   unresolvedSafetyAcknowledged: boolean;
   taskSteps: string[];
   finalVerification: string;
+  evidenceSourceIds: string[];
   status: "draft" | "approved";
   createdAt: string;
   approvedAt?: string;
@@ -27,6 +43,7 @@ export type PmDraft = {
 
 export type PlannerAnalysis = {
   id: string;
+  rowVersion: number;
   locationId: string;
   areaId: string;
   equipmentName: string;
@@ -34,6 +51,7 @@ export type PlannerAnalysis = {
   manufacturer: string;
   model: string;
   plannerNotes: string;
+  plannerEvidence: PlannerEvidence | null;
   evidenceDecision: "not_decided" | "continue_with_limitations";
   assets: AssetProposal[];
   pm?: PmDraft;
@@ -71,11 +89,25 @@ export function createId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `analysis-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function createAnalysis(): PlannerAnalysis {
+export function createPlannerEvidence(id = createId()): PlannerEvidence {
+  return {
+    id,
+    kind: "plannerData",
+    title: "Planner-provided information",
+    locator: "Planner notes",
+    applicability: "unknown",
+    applicabilityDetails: "",
+    limitations: [PLANNER_EVIDENCE_BASE_LIMITATION],
+  };
+}
+
+export function createAnalysis(catalog: CatalogLocation[] = sampleCatalog): PlannerAnalysis {
   const now = new Date().toISOString();
-  const firstLocation = sampleCatalog[0];
+  const firstLocation = catalog[0];
+  if (!firstLocation || !firstLocation.areas[0]) throw new Error("No locations and areas are configured for this workspace.");
   return {
     id: createId(),
+    rowVersion: 0,
     locationId: firstLocation.id,
     areaId: firstLocation.areas[0].id,
     equipmentName: "",
@@ -83,6 +115,7 @@ export function createAnalysis(): PlannerAnalysis {
     manufacturer: "",
     model: "",
     plannerNotes: "",
+    plannerEvidence: createPlannerEvidence(),
     evidenceDecision: "not_decided",
     assets: [],
     stage: 0,
@@ -95,6 +128,7 @@ export function createEmptyPm(analysis: PlannerAnalysis): PmDraft {
   const equipment = analysis.assets.find((asset) => asset.kind === "equipment" && asset.confirmed);
   const firstConfirmed = analysis.assets.find((asset) => asset.confirmed);
   return {
+    id: createId(),
     title: "",
     assetId: equipment?.id ?? firstConfirmed?.id ?? "",
     frequency: "",
@@ -104,6 +138,9 @@ export function createEmptyPm(analysis: PlannerAnalysis): PmDraft {
     unresolvedSafetyAcknowledged: false,
     taskSteps: [],
     finalVerification: "",
+    evidenceSourceIds: analysis.plannerEvidence?.reviewedAt && analysis.plannerEvidence.applicability === "applicable"
+      ? [analysis.plannerEvidence.id]
+      : [],
     status: "draft",
     createdAt: new Date().toISOString(),
   };
@@ -140,8 +177,8 @@ export function pmApprovalIssues(pm: PmDraft, confirmedAssets: AssetProposal[]):
   return issues;
 }
 
-export function renderPmText(analysis: PlannerAnalysis, pm: PmDraft): string {
-  const location = sampleCatalog.find((item) => item.id === analysis.locationId);
+export function renderPmText(analysis: PlannerAnalysis, pm: PmDraft, catalog: CatalogLocation[] = sampleCatalog): string {
+  const location = catalog.find((item) => item.id === analysis.locationId);
   const area = location?.areas.find((item) => item.id === analysis.areaId);
   const asset = analysis.assets.find((item) => item.id === pm.assetId);
   const durationValue = pm.durationMinutes.trim();
@@ -161,5 +198,24 @@ export function renderPmText(analysis: PlannerAnalysis, pm: PmDraft): string {
   ];
   pm.taskSteps.filter((step) => step.trim()).forEach((step, index) => lines.push(`${index + 2}. ${step.trim()}`));
   lines.push(`${pm.taskSteps.filter((step) => step.trim()).length + 2}. Verify and record: ${pm.finalVerification.trim() || "Not provided"}`);
+  lines.push("", "Evidence references");
+  const evidence = analysis.plannerEvidence && pm.evidenceSourceIds?.includes(analysis.plannerEvidence.id)
+    ? analysis.plannerEvidence
+    : null;
+  if (!evidence) {
+    lines.push("No source reference attached. Planner review required.");
+  } else {
+    const applicability = {
+      applicable: "Applicable to this equipment",
+      different_variant: "Different equipment variant",
+      unknown: "Applicability not established",
+      not_applicable: "Not applicable to this equipment",
+    }[evidence.applicability];
+    lines.push(`- ${evidence.title.trim() || "Planner-provided information"}`);
+    lines.push(`  Reference: ${evidence.locator.trim() || "Planner notes"}`);
+    lines.push(`  Applicability: ${applicability}`);
+    if (evidence.applicabilityDetails.trim()) lines.push(`  Applicability details: ${evidence.applicabilityDetails.trim()}`);
+    evidence.limitations.filter((limitation) => limitation.trim()).forEach((limitation) => lines.push(`  Limitation: ${limitation.trim()}`));
+  }
   return lines.join("\n");
 }

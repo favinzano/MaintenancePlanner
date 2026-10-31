@@ -1,47 +1,54 @@
-import type { PlannerAnalysis } from "../domain/planner";
+import { createId, createPlannerEvidence, sampleCatalog, type CatalogLocation, type PlannerAnalysis } from "../domain/planner";
 
 const storageKey = "plannermc-local-prototype-v1";
 
 export type WorkspaceSnapshot = {
   analyses: PlannerAnalysis[];
   currentAnalysisId: string | null;
+  catalog: CatalogLocation[];
 };
 
 export interface PlannerDataStore {
-  load(): WorkspaceSnapshot;
-  saveAnalysis(analysis: PlannerAnalysis): WorkspaceSnapshot;
-  selectAnalysis(id: string | null): WorkspaceSnapshot;
+  load(): Promise<WorkspaceSnapshot>;
+  saveAnalysis(analysis: PlannerAnalysis): Promise<WorkspaceSnapshot>;
 }
 
-function emptySnapshot(): WorkspaceSnapshot {
+function emptySnapshot(): Omit<WorkspaceSnapshot, "catalog"> {
   return { analyses: [], currentAnalysisId: null };
 }
 
 export class LocalPrototypeStore implements PlannerDataStore {
-  load(): WorkspaceSnapshot {
+  async load(): Promise<WorkspaceSnapshot> {
     const raw = window.localStorage.getItem(storageKey);
-    if (!raw) return emptySnapshot();
+    if (!raw) return { ...emptySnapshot(), catalog: sampleCatalog };
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as WorkspaceSnapshot).analyses)) {
       throw new Error("Saved local data could not be read. The prototype data may be invalid.");
     }
-    return parsed as WorkspaceSnapshot;
+    const loaded = parsed as WorkspaceSnapshot;
+    const analyses = loaded.analyses.map((analysis) => ({
+      ...analysis,
+      rowVersion: analysis.rowVersion ?? 1,
+      plannerEvidence: analysis.plannerEvidence ?? (analysis.plannerNotes?.trim() ? createPlannerEvidence(analysis.id) : null),
+      pm: analysis.pm ? {
+        ...analysis.pm,
+        id: analysis.pm.id ?? createId(),
+        evidenceSourceIds: analysis.pm.evidenceSourceIds ?? [],
+      } : undefined,
+    }));
+    return { ...loaded, analyses, catalog: sampleCatalog };
   }
 
-  saveAnalysis(analysis: PlannerAnalysis): WorkspaceSnapshot {
-    const current = this.load();
+  async saveAnalysis(analysis: PlannerAnalysis): Promise<WorkspaceSnapshot> {
+    const current = await this.load();
+    const previous = current.analyses.find((item) => item.id === analysis.id);
+    const savedAnalysis = { ...analysis, rowVersion: Number(previous?.rowVersion ?? 0) + 1 };
     const next: WorkspaceSnapshot = {
-      analyses: [analysis, ...current.analyses.filter((item) => item.id !== analysis.id)],
-      currentAnalysisId: analysis.id,
+      ...current,
+      analyses: [savedAnalysis, ...current.analyses.filter((item) => item.id !== savedAnalysis.id)],
+      currentAnalysisId: savedAnalysis.id,
     };
-    this.writeAndVerify(next, analysis.id, analysis.updatedAt);
-    return next;
-  }
-
-  selectAnalysis(id: string | null): WorkspaceSnapshot {
-    const current = this.load();
-    const next = { ...current, currentAnalysisId: id };
-    this.writeAndVerify(next, id ?? undefined);
+    this.writeAndVerify(next, savedAnalysis.id, savedAnalysis.updatedAt);
     return next;
   }
 
