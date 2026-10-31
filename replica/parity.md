@@ -10,7 +10,7 @@ Assessment basis: `replica/features.csv`, the PlannerMC MVP specification, the c
 
 All nine scored requirements are marked `must`. Four are complete, four are partial, and one is not implemented. The `replica-diff` parity tool assigns weight 3 to each must-have and counts `yes` as full credit, `partial` as half credit, and `no` as zero: 18 of 27 possible points, or 66.7%. The tool therefore reports **not shippable against the tracked MVP scope**, because five must-haves remain incomplete. This is separate from production readiness.
 
-The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-scope.csv), regenerated from the current PlannerMC rows in [`features.csv`](features.csv). Its `original=yes` field is a tool-compatible inclusion flag for PlannerMC's own required scope. It does not claim an original vendor has these features.
+The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-scope.csv), regenerated from the nine PlannerMC requirements in [`features.csv`](features.csv). `features.csv` is the broader vendor-evidence matrix and does not use the parity tool's input schema. The scope matrix sets `original=yes` as a tool-compatible inclusion flag for PlannerMC's own requirements; it does not claim an original vendor has these features. Running the tool against this scoped matrix returned 66.7, four of nine must-haves done, and five must-haves incomplete.
 
 ## Requirement coverage
 
@@ -26,14 +26,35 @@ The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-sco
 | Support Spanish/English text and voice conversation | No | Text conversation and language preference are absent. Speech input/output are deferred under ADR 0002. |
 | Copy the PM manually to the selected CMMS | Yes | The full PM and individual steps can be copied through the local clipboard. PlannerMC does not write to a CMMS. |
 
-## Highest-ranked gaps
+## Weakest areas
 
-The parity tool orders incomplete rows by priority and completion credit. That list is a ranking aid, not a dependency-aware implementation plan.
+The parity tool ranks only the nine PlannerMC must-haves, not out-of-scope vendor features. Scores below are the tool's weighted results for each area.
 
-1. **Bilingual text and voice conversation.** No conversation UI or language preference exists. Speech capabilities remain deferred by ADR 0002; resolving the provider, privacy, and retention decisions is a prerequisite to implementation.
-2. **Operational location and area catalog.** Current development values are synthetic. Select the operational source and provisioning process under the open catalog decision before replacing them.
-3. **PM content generation.** The current approved workflow is planner-authored. Generation remains deferred by ADR 0002 and needs a separate data-handling/provider decision before implementation.
-4. **Manual upload limits and production readiness.** Uploads fail closed until representative files, byte/page limits, database capacity, backups, retention, and restore behavior are reviewed. Field-level evidence citations and external source references also remain absent.
+| Area | Score | Counted requirements |
+| --- | ---: | ---: |
+| Conversation | 0.0 | 1 |
+| Asset intake | 50.0 | 1 |
+| Sources | 50.0 | 2 |
+| PM authoring | 75.0 | 2 |
+| Assets | 100.0 | 1 |
+| Review | 100.0 | 1 |
+| Output | 100.0 | 1 |
+
+## Top five gaps in build order
+
+These are the parity tool's five incomplete must-haves, in its priority order. This ranking is a guide; dependencies and the accepted data policy still determine which slice can be implemented next.
+
+1. **Bilingual text and voice conversation — not implemented.** Text conversation, language preference, and speech are absent. Speech recognition/synthesis are deferred under [ADR 0002](../docs/adr/0002-local-manual-extraction.md); architecture Q1–Q3/Q5 also leave hosting, provider/data handling, and audio retention decisions open.
+2. **Single-equipment intake with operational location and area — partial.** The authenticated intake works, but its current location and area catalog is synthetic. Catalog source and provisioning remain open under Q4.
+3. **PM content generation — partial.** The editor supports planner-authored fields but does not generate or technically validate instructions. Generation remains deferred under ADR 0002 pending a data-handling/provider decision.
+4. **Manual, OEM, external-research, or planner sources — partial.** Planner notes and local manual extraction exist. Uploads fail closed until numeric limits are configured; external research remains deferred.
+5. **Source provenance and evidence references — partial.** Source metadata, locators, review state, and limitations persist, but PM fields do not have field-level citations and external-source references are absent.
+
+## Layout and behavior comparison
+
+No layout score is available: `replica/screens/` contains no matching original workflow captures, and no original application has been selected for a screen-by-screen comparison. Existing `clone-screens/` images document PlannerMC only. The MacroCap sign-in image is a brand reference, not a workflow match.
+
+No original-versus-clone behavior diff is claimed. There is no paired original walkthrough to compare clicks, errors, retained state, or email behavior. Vendor feature evidence in `features.csv` comes from published descriptions and is not direct observation. PlannerMC's own verified behavior is recorded in [`test-plan.md`](test-plan.md).
 
 ## Comparison with external products
 
@@ -49,10 +70,10 @@ The current QA evidence is summarized in [`test-plan.md`](test-plan.md). It reco
 
 ## Recommended next build slice
 
-The planner-confirmed PM split proposal is implemented and verified for initial drafts. The next flow step is `/replica-diff` to review the updated gap ranking before selecting another build slice.
+**[Inference] Recommended next build slice: add field-level evidence citations to PM fields using only already reviewed planner/manual sources.** This advances a current must-have without choosing an external generation, research, or speech provider. Keep the language/voice, operational-catalog, generation, and production-upload decisions visible as dependencies; do not infer citations or technical support from a source when none is recorded.
 
 Production uploads remain gated by capacity, numeric limits, backups, retention, and a restore test.
 
 ## Run boundary
 
-This assessment includes the hosted development QA, the full local Playwright suite, and the focused PM split test recorded in the 2026-10-31 build log and `test-plan.md`. The result remains implementation coverage against PlannerMC's own MVP requirements, not a vendor application comparison. Production behavior was not tested.
+This assessment was generated with the local `replica-diff` parity script against `diffs/plannermc-scope.csv` and includes the hosted development QA, full local Playwright suite, and focused PM split test recorded in the 2026-10-31 build log and `test-plan.md`. It measures PlannerMC implementation coverage, not comparison with a vendor application. Production behavior was not tested.
