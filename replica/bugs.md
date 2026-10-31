@@ -44,25 +44,27 @@ Status: Fixed in commit `be07314`.
 
 The required intake fields block an empty submission, and the approval guard rejected incomplete PM approval while preserving Draft. No other confirmed product bugs were reproduced in this automated pass.
 
-## To check
+## Responsive manual intake QA
 
-### QA-05: Manual intake responsive E2E case not run
+### QA-05: Manual intake responsive E2E
 
 - Severity: untriaged; verification gap, not a reproduced product bug
 - Flow / case: F02-E2
 - Screen: Evidence / Manual documents
-- Build: dirty `main` worktree  Browser / device: Playwright runner in the restricted local environment
+- Build: `main`  Browser / device: Chromium 159.0.8136.0 supplied for this workspace, Playwright
 
 Steps
 1. Run the manual intake layout test at 390×844 and 1440×1000 CSS px.
 
 Expected: The Evidence screen has no horizontal overflow and no axe violations at either size.
 
-Actual: The test file was added, but the local Playwright runner has no installed browser. `npx playwright install chromium` could not resolve `cdn.playwright.dev` (`ENOTFOUND`), so the responsive E2E result is unknown.
+Actual: Pass. Mobile (390×844 CSS px) and desktop (1440×1000 CSS px) had no horizontal overflow or axe violations. The test observed no console/page errors or HTTP 5xx responses.
 
-Evidence: `e2e/manual-intake-layout.spec.ts`; local install attempt dated 2026-10-31.
+Evidence: Playwright output for `e2e/manual-intake-layout.spec.ts`, 1 passed.
 
-Status: Run when a Playwright browser is available. No UI defect has been reproduced.
+Status: Passed 2026-10-31. No UI defect was reproduced.
+
+## To check
 
 ### QA-06: Actual local file-picker path not exercised
 

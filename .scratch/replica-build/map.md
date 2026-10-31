@@ -31,7 +31,7 @@ Date: 2026-10-31.
 - User delegated Q2/Q3 for the initial manual flow to the assistant's judgment. Decision: extract PDF, DOCX, JPG/JPEG, and PNG in the browser using locally bundled PDF.js, Mammoth, and Tesseract.js assets. Do not send manuals or extracted text to external OCR, AI, search, or speech services. The original requested upload is persisted through the already-approved Supabase/PostgreSQL boundary; research, generation, and voice remain deferred.
 - Q3 format choice is resolved for this slice; numeric byte/page limits remain unset until representative manuals and live development database use are measured. Production uploads stay disabled until capacity, plan, backups, retention, and a restore test are established.
 - Tracking issue: [03-local-manual-intake](issues/03-local-manual-intake.md).
-- Issue [03](issues/03-local-manual-intake.md) is resolved for the implementation and requested server/build checks. The applied development migration, local extraction checks, synthetic original read-back, PM reference, and upload shutdown after QA are recorded in [the build log](../../replica/build-log.md). Mobile E2E, a real OS file-picker selection, and manual-specific cross-account denial remain unverified and are tracked in the test plan/bug notes.
+- Issue [03](issues/03-local-manual-intake.md) is resolved for the implementation and requested server/build checks. The applied development migration, local extraction checks, synthetic original read-back, PM reference, upload shutdown after QA, and passing mobile/desktop E2E are recorded in [the build log](../../replica/build-log.md). A native OS file-picker selection and manual-specific cross-account denial remain unverified and are tracked in the test plan/bug notes.
 
 ## Fog
 
