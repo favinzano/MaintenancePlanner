@@ -15,5 +15,5 @@ Date: 2026-10-31.
 ## Fog
 
 - A synthetic invalid bearer and a genuine expired signed JWT were rejected with HTTP 401 at the save API; the browser client's auto-refresh/sign-in transition remains untested. The incomplete-approval guard passed; its button remains enabled as a UX follow-up. Valid approval and clipboard behavior are outside this negative/edge-case scope.
-- Automated Playwright and axe coverage now exercises the local prototype source-to-draft flow, required intake validation, and incomplete approval. Hosted auth refresh and valid approval/copy remain outside this automated pass.
+- Automated Playwright and axe coverage now exercises the local prototype source-to-draft flow, required intake validation, incomplete-approval rejection, valid approval, and clipboard copy. Hosted auth refresh and valid approval/copy remain unverified.
 - Automated QA found two reproducible S2/S3 issues in the PM editor: the handoff preview lacked keyboard focus, and overlapping timers could hide a newer save confirmation. Both fixes and regression checks are recorded in [bugs](../../replica/bugs.md).

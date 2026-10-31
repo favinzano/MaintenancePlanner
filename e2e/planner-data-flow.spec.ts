@@ -102,3 +102,32 @@ test("F01-A3: incomplete PM approval is rejected and remains a draft", async ({ 
   await scanAccessibility(page, "draft after rejected approval");
   expect(failures, "unexpected browser runtime failures").toEqual([]);
 });
+
+test("F01-A4: complete reviewed PM can be approved and copied locally", async ({ page }) => {
+  const failures = watchRuntime(page);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4174" });
+  await openPlannerEditor(page, "QA ONLY - Approval and copy");
+  await page.getByLabel("PM title").fill("QA ONLY - Approved synthetic PM");
+  await page.getByRole("textbox", { name: "Frequency" }).fill("Not established in synthetic QA");
+  await page.getByLabel("Estimated duration (minutes)").fill("10");
+  await page.getByLabel("Operating state", { exact: true }).selectOption("stopped");
+  await page.getByLabel("Safety precautions / LOTO details").fill("Synthetic placeholder; consult approved site procedures.");
+  await page.getByRole("button", { name: "Add task step" }).click();
+  await page.getByLabel("Task step 1", { exact: true }).fill("Record the synthetic QA result.");
+  await page.getByLabel("Final verification content").fill("Record the synthetic outcome.");
+  await page.getByRole("checkbox", { name: "I reviewed this planner-authored PM, including the asset, frequency, duration, operating state, safety details, task steps, and any unresolved limitations." }).check();
+  await scanAccessibility(page, "complete PM before approval");
+
+  await page.getByRole("button", { name: "Approve PM" }).click();
+  await expect(page.getByText("Approved", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy approved PM" })).toBeVisible();
+  await scanAccessibility(page, "approved PM");
+  await page.getByRole("button", { name: "Copy approved PM" }).click();
+  await expect(page.getByRole("status")).toHaveText("PM copied to the local clipboard.");
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clipboard).toContain("QA ONLY - Approved synthetic PM");
+  expect(clipboard).toContain("Evidence references");
+  expect(clipboard).toContain("Synthetic planner notes");
+  expect(clipboard).toContain("Synthetic content; not a maintenance instruction.");
+  expect(failures, "unexpected browser runtime failures").toEqual([]);
+});

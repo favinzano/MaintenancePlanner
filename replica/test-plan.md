@@ -1,6 +1,6 @@
 # Test plan: PlannerMC
 
-Build: `be07314`, 2026-10-31  Env: Chrome, local UI `:4173`, authenticated Fastify API and Supabase development project. Playwright automation ran in isolated local-prototype mode.
+Build: PlannerMC prototype on `main`, tested 2026-10-31  Env: Chrome, local UI `:4173`, authenticated Fastify API and Supabase development project. Playwright automation ran in isolated local-prototype mode.
 
 This pass covers the authenticated data flow through saving a QA-only PM draft. Earlier prototype and API-smoke results are labeled as prior evidence, not current-pass reruns.
 
@@ -27,6 +27,7 @@ This pass covers the authenticated data flow through saving a QA-only PM draft. 
 | F01-A1 | Source-to-PM draft persistence | automated happy path | Complete intake, review source, confirm equipment, author PM, save, reload | Reviewed source and draft remain visible and traceable after reload | Playwright Chromium, isolated local prototype | Pass after fix. Draft persisted with source label, location, applicability, limitations, and reference in the copied preview. axe scanned workspace, intake, evidence, assets, PM editor, and reloaded draft. |
 | F01-A2 | Empty intake validation | automated negative | Submit intake without required equipment details | Browser validation focuses the first missing field and blocks progression | Playwright Chromium, isolated local prototype | Pass. axe scan also passed on the intake validation screen. |
 | F01-A3 | Incomplete PM approval | automated negative | Enter the PM editor and select Approve PM without required content or reviewer acknowledgement | Approval is rejected and saved state remains Draft | Playwright Chromium, isolated local prototype | Pass after fix. Validation alert appeared; reload showed Draft. axe scanned the editor before and after the rejected attempt. |
+| F01-A4 | Valid PM approval and local copy | automated happy path | Complete required PM content, acknowledge review, approve, copy the PM | Approved state is visible and clipboard includes the reviewed evidence and its limitations | Playwright Chromium with local clipboard permissions, isolated local prototype | Pass. Approved status and copy action appeared. Clipboard text contained the PM title, evidence reference, and limitations. axe passed before and after approval. This does not establish hosted Supabase approval behavior. |
 
 ## Current-pass QA note
 
@@ -36,8 +37,8 @@ This pass reused the initial empty analysis as `QA Sample Pump 001`, with a clea
 
 - Decide whether empty analyses should be persisted before intake details and whether intake should warn before losing unsaved fields on reload. These are observed product questions, not confirmed bugs.
 - The browser client's automatic refresh/sign-in transition after a genuine token expiry was not exercised. The API save route was tested with a genuine expired signed JWT, and the existing save error path was inspected; the network-failure UI branch was separately exercised in F01-E5a.
-- Valid approval and clipboard behavior remain untested against hosted development. The negative approval guard was exercised; no valid approval was saved and no clipboard write was made.
-- The automated suite covers the source-to-draft flow, required intake validation, and incomplete approval in isolated local mode. It does not exercise Supabase authentication refresh or valid approval/copy against hosted development.
+- Valid approval and clipboard behavior passed in isolated local mode. They have not been repeated against hosted development; the negative approval guard was exercised there, and no hosted clipboard write was made.
+- The automated suite covers the source-to-draft flow, required intake validation, incomplete-approval rejection, valid local approval, and local clipboard copy. It does not exercise Supabase authentication refresh or valid approval/copy against hosted development.
 
 ## Exclusions
 
@@ -45,4 +46,4 @@ Manual upload/OCR, external research, technical-content generation, voice, CMMS 
 
 ## Automated QA addition
 
-The new Playwright suite ran against a clean browser context with `VITE_DATA_MODE=local` and synthetic content only. All three cases passed after the PM handoff preview was made keyboard-focusable and save-notice timers were corrected. axe 4.14.0 reported no remaining violations on the scanned screens. Each test fails on browser console errors, page errors, and HTTP 5xx responses.
+The new Playwright suite ran against clean browser contexts with `VITE_DATA_MODE=local` and synthetic content only. All four cases passed after the PM handoff preview was made keyboard-focusable and save-notice timers were corrected. It covered draft persistence, required-field validation, incomplete-approval rejection, valid local approval, and clipboard copy. axe 4.14.0 reported no remaining violations on the scanned screens. Each test fails on browser console errors, page errors, and HTTP 5xx responses.
