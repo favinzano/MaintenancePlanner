@@ -4,7 +4,7 @@ Assessment date: 2026-11-01
 
 Assessment basis: `replica/features.csv`, the PlannerMC MVP specification, the current implementation notes, and QA evidence in `replica/test-plan.md`.
 
-Refresh: reviewed on 2026-11-01 after live development catalog provisioning and F08 language-preference QA. The PlannerMC-only matrix is 77.8/100: five of nine must-haves complete and four partial. OPS-derived location/area values were provisioned and verified in the development workspace. The es/en preference is implemented, but text conversation and speech remain absent.
+Refresh: rerun on 2026-11-01 after the full local E2E suite passed 12/12 and a TLS-verified, read-only development database measurement. The parity tool still returns 77.8/100: five of nine must-haves complete and four partial. The QA-08 accessibility fix does not change product-scope coverage. OPS-derived location/area values remain verified in the development workspace. The es/en preference is implemented, but text conversation and speech remain absent.
 
 ## Result
 
@@ -53,6 +53,14 @@ These are the parity tool's four incomplete must-haves, in its priority order. T
 
 **Q4 implementation status:** the operator-managed provisioning method is accepted under [ADR 0003](../docs/adr/0003-operator-managed-workspace-catalog.md). Issue 08 implements the local CLI and workspace-scoped intake reader. Four OPS-derived locations and 16 areas are now provisioned and verified in the sole configured development workspace. The two synthetic sample locations remain; no production readiness is inferred.
 
+## Development manual-capacity baseline
+
+On 2026-11-01, a TLS-verified PostgreSQL session against the repository-mapped `plannermc-dev` project ran inside a `READ ONLY` transaction. `pg_database_size(current_database())` returned 12,375,731 bytes (about 11.8 MiB). `public.original_documents` contained one record totaling 629 bytes, and its table plus indexes occupied 65,536 bytes. The existing QA record is the synthetic 629-byte PDF documented in `test-plan.md`; it is not a representative maintenance manual. No file contents, credentials, or user data were read by this measurement.
+
+Supabase's current published Free-plan database-size quota is 500 MB per project; its docs distinguish that quota from the 2 GB provisioned disk on Free projects. Original manuals are stored in PostgreSQL `BYTEA`, so database-size usage is relevant, while the file-storage quota does not describe this table. See [Supabase billing quotas](https://supabase.com/docs/guides/platform/billing-on-supabase) and [database size vs. disk usage](https://supabase.com/docs/guides/platform/database-size). The measured development size is a baseline only. It does not establish the project's current billing plan, remaining disk headroom, manual extraction performance, or safe per-file/page/total limits.
+
+Numeric limits remain unset and new uploads remain fail-closed until representative manuals are profiled locally. The next tracked action is [issue 10](../.scratch/replica-build/issues/10-manual-capacity-bounds.md). Its sample files must stay outside version control; no manual bytes or extracted text should be sent to an external service.
+
 ## Layout and behavior comparison
 
 No layout score is available. `replica/screens/` has zero reference screenshots, and no original application has been selected for screen-by-screen comparison. The existing captures document PlannerMC only. Their native PNG dimensions are not a paired-viewport comparison.
@@ -93,8 +101,8 @@ The current QA evidence is summarized in [`test-plan.md`](test-plan.md). It reco
 
 **[Inference] Continue with `/replica-build` for an unblocked remaining gap after product scope is chosen.** The Q4 provisioning and authenticated selector checks passed. Conversation, voice, and PM generation remain gated or deferred under ADR 0002; the next implementation slice should not claim those capabilities until their provider and data-handling boundaries are resolved. Field citations record planner selection and do not establish technical correctness.
 
-Production uploads remain gated by capacity, numeric limits, backups, retention, and a restore test.
+Production uploads remain gated by capacity, numeric limits, backups, retention, and a restore test. Development upload limits also remain unset: the only live manual is a 629-byte synthetic QA fixture, not a representative maintenance document.
 
 ## Run boundary
 
-The parity score was rerun with the local `replica-diff` script against `diffs/plannermc-scope.csv` on 2026-11-01. The catalog's live PostgreSQL and authenticated UI checks were run in this pass; other feature evidence is carried forward from the build log and `test-plan.md`. It measures PlannerMC implementation coverage, not comparison with a vendor application. Production behavior was not tested.
+The parity score was rerun with the local `replica-diff` script against `diffs/plannermc-scope.csv` on 2026-11-01 after the 12/12 E2E rerun. The manual-capacity baseline is a separate, TLS-verified, strictly read-only query against the development project; no rows were changed. The live catalog PostgreSQL and authenticated UI checks are carried forward from their separately recorded QA pass. The score measures PlannerMC implementation coverage, not comparison with a vendor application. Production behavior was not tested.
