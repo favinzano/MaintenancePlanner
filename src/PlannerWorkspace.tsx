@@ -43,6 +43,7 @@ import {
   totalPmSteps,
   type AssetProposal,
   type CatalogLocation,
+  type ConversationLanguage,
   type EvidenceApplicability,
   type ManualEvidence,
   type ManualExtraction,
@@ -182,6 +183,8 @@ function PlannerWorkspace() {
   const [authReady, setAuthReady] = useState(!backendMode);
   const [authenticated, setAuthenticated] = useState(false);
   const [accountEmail, setAccountEmail] = useState("");
+  const [conversationLanguage, setConversationLanguage] = useState<ConversationLanguage>("en");
+  const [preferenceSaving, setPreferenceSaving] = useState(false);
   const [passwordActionRequired, setPasswordActionRequired] = useState(false);
 
   useEffect(() => {
@@ -189,13 +192,16 @@ function PlannerWorkspace() {
     async function loadWorkspace() {
       setLoading(true);
       setError("");
+      setConversationLanguage("en");
       try {
-        const [loaded, manualConfig] = await Promise.all([
+        const [loaded, manualConfig, preferredLanguage] = await Promise.all([
           dataStore.load(),
           backendMode ? httpPlannerStore.getManualIntakeConfig() : Promise.resolve(disabledManualIntakeConfig),
+          backendMode ? httpPlannerStore.getConversationLanguage() : Promise.resolve<ConversationLanguage>("en"),
         ]);
         if (!active) return;
         setManualIntakeConfig(manualConfig);
+        setConversationLanguage(preferredLanguage);
         setSnapshot(loaded);
         const selected = loaded.analyses.find((item) => item.id === loaded.currentAnalysisId) ?? loaded.analyses[0] ?? null;
         if (selected) {
@@ -243,6 +249,7 @@ function PlannerWorkspace() {
         setPm(null);
         setActivePmId(null);
         setManualIntakeConfig(disabledManualIntakeConfig);
+        setConversationLanguage("en");
         setLoading(false);
       }
     });
@@ -264,6 +271,24 @@ function PlannerWorkspace() {
       setNotice("");
       noticeTimeoutRef.current = undefined;
     }, 3200);
+  }
+
+  async function changeConversationLanguage(language: ConversationLanguage) {
+    if (!backendMode || preferenceSaving || language === conversationLanguage) return;
+    const previous = conversationLanguage;
+    setConversationLanguage(language);
+    setPreferenceSaving(true);
+    setError("");
+    try {
+      const saved = await httpPlannerStore.setConversationLanguage(language);
+      setConversationLanguage(saved);
+      showNotice("Conversation-language preference saved.");
+    } catch (caught) {
+      setConversationLanguage(previous);
+      setError(caught instanceof Error ? caught.message : "The conversation-language preference could not be saved.");
+    } finally {
+      setPreferenceSaving(false);
+    }
   }
 
   function replaceAnalysisPm(current: PlannerAnalysis, nextPm: PmDraft): PlannerAnalysis {
@@ -729,6 +754,13 @@ function PlannerWorkspace() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <span className="hidden text-xs text-muted sm:inline">{backendMode ? accountEmail : "MacroCap Labs identity"}</span>
+            {backendMode && <div className="hidden items-center gap-2 lg:flex">
+              <label htmlFor="conversation-language-desktop" className="text-xs text-muted">Conversation</label>
+              <select id="conversation-language-desktop" aria-describedby="conversation-language-help" value={conversationLanguage} disabled={preferenceSaving || loading} onChange={(event) => void changeConversationLanguage(event.target.value as ConversationLanguage)} className="min-h-9 w-28 rounded-control border border-border-input bg-panel-muted px-2 py-1 text-xs text-foreground">
+                <option value="en">English</option>
+                <option value="es">Español</option>
+              </select>
+            </div>}
             <a href="/design" className="rounded-control px-2.5 py-2 text-xs font-medium text-accent hover:bg-panel-raised">Design gallery</a>
             {backendMode && <button type="button" disabled={saving} onClick={() => void signOut()} className="inline-flex min-h-9 items-center gap-1.5 rounded-control px-2.5 text-xs text-muted hover:bg-panel-raised hover:text-foreground disabled:opacity-50"><LogOut size={14} aria-hidden="true" />Sign out</button>}
           </div>
@@ -739,6 +771,19 @@ function PlannerWorkspace() {
           <a href="/design" className="shrink-0 rounded-control px-3 py-2 text-xs text-muted">Design system</a>
           <button type="button" disabled={saving} onClick={() => void startAnalysis()} className="shrink-0 rounded-control px-3 py-2 text-xs text-muted disabled:opacity-50">New analysis</button>
         </nav>
+
+        {backendMode && <div className="flex items-center justify-between gap-3 border-b border-border bg-panel-muted px-4 py-2 lg:hidden">
+          <div className="min-w-0">
+            <label htmlFor="conversation-language-mobile" className="block text-xs font-medium text-foreground">Conversation language</label>
+            <p className="text-xs leading-5 text-muted">For future conversational prompts; the interface and PMs stay in English.</p>
+          </div>
+          <select id="conversation-language-mobile" aria-describedby="conversation-language-help" value={conversationLanguage} disabled={preferenceSaving || loading} onChange={(event) => void changeConversationLanguage(event.target.value as ConversationLanguage)} className="min-h-8 shrink-0 rounded-control border border-border-input bg-panel-muted px-2 text-xs text-foreground">
+            <option value="en">English</option>
+            <option value="es">Español</option>
+          </select>
+        </div>}
+
+        <p id="conversation-language-help" className="sr-only">Saved for future conversational prompts. The PlannerMC interface and PM documents remain in English.</p>
 
         <main id="workspace" className="mx-auto max-w-6xl px-4 pb-16 pt-7 sm:px-7 sm:pt-9">
           <div className="mb-7 flex flex-wrap items-end justify-between gap-4 border-b border-border pb-6">

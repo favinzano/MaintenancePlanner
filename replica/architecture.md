@@ -63,7 +63,7 @@ Every user-owned row carries `owner_id` and `workspace_id`, except the user iden
 
 ### Transaction boundaries and storage
 
-- A write and its operation receipt commit in the same PostgreSQL transaction.
+- A domain-record write and its operation receipt commit in the same PostgreSQL transaction. The single-row user preference is updated idempotently and then checked with a separate read-back.
 - PM approval serializes on the PM/version, assigns the next revision number once, stores the immutable approved snapshot, updates the current-version pointer, and records the receipt atomically.
 - A repeated command with the same `operation_id` and request digest returns its existing outcome. Reusing the ID with a different digest is a conflict. A second operation ID cannot approve the same PM version twice.
 - Draft edits compare `expected_row_version`; a mismatch returns a conflict and preserves both the saved version and the caller's proposed changes for review.
@@ -74,7 +74,7 @@ Every user-owned row carries `owner_id` and `workspace_id`, except the user iden
 
 ### API contract
 
-The table describes the target API. Authentication actions use the Supabase Auth client directly; the current backend slice implements `GET /api/workspace`, `POST /api/analyses`, `PUT /api/analyses/{analysisId}`, and `GET /api/health`. Other rows are later routes, not implemented endpoints. `owner_id` and `workspace_id` are resolved on the server. Mutations carry an `operation_id`; edits also carry `expected_row_version`; decisions identify the presented resource/version and digest. Responses use the local plan's outcomes: `completed`, `awaitingDecision`, `failed`, `conflict`, or `resultUnverified`, with resource/version, issues, valid next actions, English UI message key, localized conversational explanation, and verification/operation metadata as applicable.
+The table describes the target API. Authentication actions use the Supabase Auth client directly; the current backend slice implements `GET /api/workspace`, `GET /api/me/preferences`, `PUT /api/me/preferences/conversation-language`, `POST /api/analyses`, `PUT /api/analyses/{analysisId}`, and `GET /api/health`, plus the documented manual-intake routes. Other rows are later routes, not implemented endpoints. `owner_id` and `workspace_id` are resolved on the server. Domain mutations carry an `operation_id`; edits also carry `expected_row_version`; decisions identify the presented resource/version and digest. Preference updates are idempotent current-state writes verified by separate read-back. Responses use the local plan's outcomes: `completed`, `awaitingDecision`, `failed`, `conflict`, or `resultUnverified`, with resource/version, issues, valid next actions, English UI message key, localized conversational explanation, and verification/operation metadata as applicable.
 
 | Method and path | Action / flow | Caller | Input → output | Key checks |
 | --- | --- | --- | --- | --- |
@@ -85,7 +85,7 @@ The table describes the target API. Authentication actions use the Supabase Auth
 | `POST /api/analyses` | Create analysis | Authenticated | `operation_id`, analysis, expected row version 0 → verified workspace snapshot | Validate catalog ownership, data shape, and the planner-data slice. |
 | `PUT /api/analyses/{analysisId}` | Save analysis | Authenticated | `operation_id`, analysis, expected row version → verified workspace snapshot | Atomic transaction, owner/workspace scoping, idempotency receipt, optimistic version check, and post-commit read-back. |
 | `GET /api/me/preferences` | Read language preference | Authenticated | None → preference | Resolve user from session. |
-| `PUT /api/me/preferences/conversation-language` | Set es/en preference | Authenticated | `language`, `operation_id` → persisted preference | Verify by read-back; UI/document language remains English. |
+| `PUT /api/me/preferences/conversation-language` | Set es/en preference | Authenticated | `conversationLanguage` → persisted preference | Derive user/workspace from the verified session, accept only `en` or `es`, and verify by separate read-back; UI/document language remains English. |
 | `GET /api/catalog/locations` | Load preconfigured locations | Authenticated | Optional search → owned-workspace locations | Catalog provisioning is not an MVP administration flow. |
 | `GET /api/catalog/locations/{locationId}/areas` | Load valid areas | Authenticated | Location → its areas | Require location/workspace ownership. |
 | `POST /api/analyses` | Start one-equipment analysis (F1) | Authenticated | Location, area, known equipment details → analysis | Area must belong to location; one equipment per analysis. |

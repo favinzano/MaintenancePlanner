@@ -13,6 +13,7 @@
     "build": "tsc -b && tsc -p tsconfig.server.build.json && vite build",
     "test:server-validation": "node --import tsx --test server/save-validation.test.ts server/pm-canonical.test.ts server/pm-draft-deletion.test.ts",
     "test:server-manual": "node --import tsx --test server/manual-validation.test.ts",
+    "test:conversation-preferences": "node --import tsx --test server/conversation-preferences.test.ts",
     "test:catalog-provisioning": "node --import tsx --test scripts/catalog-provisioning.test.mjs server/catalog-repository.test.ts",
     "test:domain": "node --import tsx --test src/domain/planner.test.ts",
     "test:e2e": "playwright test",

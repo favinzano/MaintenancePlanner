@@ -8,6 +8,7 @@ import { getDocument as getPdfDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AdditionalPmPlan, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../src/domain/planner.js";
 import { canonicalFieldEvidence } from "./pm-canonical.js";
 import { loadWorkspaceCatalog } from "./catalog-repository.js";
+import { loadConversationLanguage, parseConversationLanguage, saveConversationLanguage } from "./conversation-preferences.js";
 import { parsePmDraftDeletionRequest, planPmDraftDeletion } from "./pm-draft-deletion.js";
 import { assertApplicableManualCitations, assertReviewedManualReferences, parseSaveBody, type SaveBody } from "./save-validation.js";
 import { MANUAL_CONTENT_TYPES, parseManualUploadDescriptor, readManualUploadConfig, verifyPdfPageCount, type ManualExtractionMethod, type ManualLocatorRange, type ManualUploadDescriptor } from "./manual-validation.js";
@@ -1454,6 +1455,30 @@ async function saveManualDocument(owner: Principal, analysisId: string, descript
 }
 
 app.get("/api/health", async () => ({ status: "ok" }));
+app.get("/api/me/preferences", { preHandler: authenticate }, async (request, reply) => {
+  try {
+    return { conversationLanguage: await loadConversationLanguage(pool, principal(request)) };
+  } catch (error) {
+    request.log.error({ err: error }, "Planner language preference read failed");
+    return reply.code(500).send({ message: "The conversation-language preference could not be loaded." });
+  }
+});
+app.put("/api/me/preferences/conversation-language", { preHandler: authenticate }, async (request, reply) => {
+  if (!isRecord(request.body)) return reply.code(400).send({ message: "The conversation-language preference is invalid." });
+  const language = parseConversationLanguage(request.body.conversationLanguage);
+  if (!language) return reply.code(400).send({ message: "Choose English or Spanish as the conversation language." });
+  try {
+    return { conversationLanguage: await saveConversationLanguage(pool, principal(request), language) };
+  } catch (error) {
+    const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 500;
+    request.log.error({ err: error }, "Planner language preference update failed");
+    return reply.code(statusCode).send({
+      message: statusCode === 409 || statusCode === 503
+        ? (error instanceof Error ? error.message : "The conversation-language preference could not be verified.")
+        : "The conversation-language preference could not be saved.",
+    });
+  }
+});
 app.get("/api/manual-intake/config", { preHandler: authenticate }, async () => ({
   ...manualUploadConfig,
   acceptedTypes: Object.values(MANUAL_CONTENT_TYPES),

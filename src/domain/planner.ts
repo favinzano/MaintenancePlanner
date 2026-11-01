@@ -1,5 +1,7 @@
 export const MAX_PM_STEPS = 15;
 
+export type ConversationLanguage = "en" | "es";
+
 export type OperatingState = "running" | "stopped" | "undetermined";
 
 export type AssetProposal = {

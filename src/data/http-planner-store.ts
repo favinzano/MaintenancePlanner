@@ -1,4 +1,4 @@
-import type { ManualEvidence, ManualExtraction, ManualIntakeConfig, PlannerAnalysis } from "../domain/planner";
+import type { ConversationLanguage, ManualEvidence, ManualExtraction, ManualIntakeConfig, PlannerAnalysis } from "../domain/planner";
 import type { PlannerDataStore, WorkspaceSnapshot } from "./local-prototype-store";
 import { supabaseClient } from "./supabase-client";
 
@@ -47,6 +47,19 @@ export class HttpPlannerStore implements PlannerDataStore {
 
   async getManualIntakeConfig(): Promise<ManualIntakeConfig> {
     return this.request<ManualIntakeConfig>("/api/manual-intake/config");
+  }
+
+  async getConversationLanguage(): Promise<ConversationLanguage> {
+    const result = await this.request<{ conversationLanguage: ConversationLanguage }>("/api/me/preferences");
+    return result.conversationLanguage;
+  }
+
+  async setConversationLanguage(conversationLanguage: ConversationLanguage): Promise<ConversationLanguage> {
+    const result = await this.request<{ conversationLanguage: ConversationLanguage }>("/api/me/preferences/conversation-language", {
+      method: "PUT",
+      body: JSON.stringify({ conversationLanguage }),
+    });
+    return result.conversationLanguage;
   }
 
   async uploadManual(analysisId: string, file: File, extraction: ManualExtraction, operationId: string): Promise<ManualEvidence> {
