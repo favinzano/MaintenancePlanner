@@ -20,7 +20,7 @@ Actual: axe 4.14.0 reported the `region` rule because the screen-reader-only con
 
 Evidence: The first Playwright run failed the `region` rule against `#conversation-language-help`. The mobile selector now references its visible help text, and the desktop selector has a self-describing label. The focused responsive case passed after the change; the full suite then passed 12/12.
 
-Status: Fixed in the current worktree; commit pending.
+Status: Fixed in commit `64d36ab`.
 
 ### QA-03: PM preview scroll region could not receive keyboard focus
 
