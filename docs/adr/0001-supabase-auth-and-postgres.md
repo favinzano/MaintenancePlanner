@@ -24,7 +24,7 @@ Before production uploads are enabled, select a Supabase plan with database back
 - Browser clients authenticate with Supabase Auth but call Fastify for PlannerMC data. The browser does not connect directly to PostgreSQL or write PlannerMC tables through Supabase APIs.
 - Fastify validates the Supabase access token and derives the user and workspace from server-side profile data. Request bodies cannot choose trusted ownership identifiers.
 - Manual bytes stored in PostgreSQL are covered by database backups. This design does not use Supabase Storage for originals.
-- The app's own hosting location, target browser/device matrix, production project, SMTP provider, catalog-provisioning procedure, exact limits, backup retention, and recovery targets remain to be selected or completed where noted in the plan.
+- The app's own hosting location, target browser/device matrix, production project, SMTP provider, exact limits, backup retention, and recovery targets remain to be selected or completed where noted in the plan. The operator-managed workspace catalog path is recorded in [ADR 0003](0003-operator-managed-workspace-catalog.md).
 - A successful database write is reported complete only after a separate read-back verifies the expected record.
 
 ## Alternatives considered

@@ -7,6 +7,7 @@ import { Pool, type PoolClient } from "pg";
 import { getDocument as getPdfDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createPlannerEvidence, PLANNER_EVIDENCE_BASE_LIMITATION, pmApprovalIssues, type AdditionalPmPlan, type AssetProposal, type CatalogLocation, type EvidenceApplicability, type PlannerAnalysis, type PmDraft, type PmVersionHistoryEntry } from "../src/domain/planner.js";
 import { canonicalFieldEvidence } from "./pm-canonical.js";
+import { loadWorkspaceCatalog } from "./catalog-repository.js";
 import { parsePmDraftDeletionRequest, planPmDraftDeletion } from "./pm-draft-deletion.js";
 import { assertApplicableManualCitations, assertReviewedManualReferences, parseSaveBody, type SaveBody } from "./save-validation.js";
 import { MANUAL_CONTENT_TYPES, parseManualUploadDescriptor, readManualUploadConfig, verifyPdfPageCount, type ManualExtractionMethod, type ManualLocatorRange, type ManualUploadDescriptor } from "./manual-validation.js";
@@ -97,25 +98,6 @@ async function authenticate(request: FastifyRequest, reply: { code: (n: number) 
 function principal(request: FastifyRequest): Principal {
   if (!request.principal) throw Object.assign(new Error("Sign in to access this workspace."), { statusCode: 401 });
   return request.principal;
-}
-
-async function loadCatalog(owner: Principal): Promise<CatalogLocation[]> {
-  const { rows } = await pool.query<{ id: string; name_en: string; area_id: string; area_name: string }>(
-    `SELECT l.id, l.name_en, a.id AS area_id, a.name_en AS area_name
-       FROM public.locations l
-       JOIN public.areas a ON a.location_id = l.id AND a.workspace_id = l.workspace_id
-       JOIN public.users u ON u.workspace_id = l.workspace_id
-      WHERE u.id = $1 AND l.workspace_id = $2
-      ORDER BY l.name_en, a.name_en`,
-    [owner.userId, owner.workspaceId],
-  );
-  const locations = new Map<string, CatalogLocation>();
-  for (const row of rows) {
-    const location = locations.get(row.id) ?? { id: row.id, name: row.name_en, areas: [] };
-    location.areas.push({ id: row.area_id, name: row.area_name });
-    locations.set(row.id, location);
-  }
-  return [...locations.values()];
 }
 
 async function loadAnalysis(owner: Principal, analysisId: string): Promise<PlannerAnalysis | null> {
@@ -386,7 +368,7 @@ async function loadWorkspace(owner: Principal, currentAnalysisId?: string): Prom
   const selected = currentAnalysisId && analyses.some((item) => item.id === currentAnalysisId)
     ? currentAnalysisId
     : analyses[0]?.id ?? null;
-  return { analyses, currentAnalysisId: selected, catalog: await loadCatalog(owner), pmRevisionLifecycleEnabled: revisionLifecycleEnabled };
+  return { analyses, currentAnalysisId: selected, catalog: await loadWorkspaceCatalog(pool, owner), pmRevisionLifecycleEnabled: revisionLifecycleEnabled };
 }
 
 function canonicalAnalysis(analysis: PlannerAnalysis, includeRevisionIntent = false) {

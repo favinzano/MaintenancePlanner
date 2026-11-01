@@ -139,3 +139,21 @@ The new Playwright suite ran against clean browser contexts with `VITE_DATA_MODE
 - The live analysis had no original manual because development uploads are disabled. The transaction records and checks original-document IDs, but live preservation of an actual uploaded manual was not exercised in this slice.
 - The SQL read/write paths are scoped by owner and workspace and do not disclose an out-of-scope analysis; no second-owner PM was available for a live cross-owner denial check in this run. Production security behavior is not claimed.
 - Automated E2E uses isolated browser-local data and does not exercise authenticated PostgreSQL. Authenticated browser checks above are a separate synthetic development QA path.
+
+## F07: Workspace location and area catalog provisioning
+
+| case | flow | type | steps | expected | method | result |
+| --- | --- | --- | --- | --- | --- | --- |
+| F07-H1 | Provision valid synthetic catalog | happy/transaction/read-back | Parse a valid manifest, confirm the target workspace and environment, write the locations/areas in one transaction, and read each entry back after commit | Matching names retain IDs, requested entries are present after read-back, and omitted existing rows are retained | Node test with transactional PostgreSQL client double | Pass. Re-running with case-only name changes retained IDs; provisioning a subset left the omitted location/area rows present. A separate read-back verified every requested entry. |
+| F07-N1 | Invalid manifest and target | negative/fail-closed | Exercise invalid UUID, empty catalog, empty areas, blank/duplicate names, workspace mismatch, environment mismatch, and unapproved remote/production flags | Reject before any catalog write | Node test | Pass. Validation and target-guard cases rejected invalid requests. |
+| F07-E1 | Rollback and missing workspace | negative/transaction | Run dry-run, target a missing workspace, and inject a write failure in the client double | Dry-run and failures leave no committed catalog mutation | Node test with transactional PostgreSQL client double | Pass. Dry-run rolled back; missing workspace failed before catalog writes; an injected write error rolled back the entire transaction. |
+| F07-H2 | Authenticated catalog loading | authorization | Load location/area choices using the authenticated user's identity and workspace | Return only rows from the authenticated workspace and its areas | Node test for `loadWorkspaceCatalog` query contract | Pass. Tests verify the identity/workspace-scoped query and location-to-area mapping. |
+| F07-N2 | Invalid database URL | negative/fail-closed | Supply a non-PostgreSQL URL to the target validator | Reject before opening a database connection | Node test | Pass. A non-PostgreSQL protocol was rejected. |
+| F07-E2 | Read-back mismatch | edge/committed-state | Commit a synthetic catalog, then simulate a missing area in the independent read-back | Report that the write committed but verification failed; do not claim rollback | Node test with transactional PostgreSQL client double | Pass. The CLI boundary receives an explicit post-commit read-back error and does not attempt rollback after commit. |
+| F07-A1 | Automated suite and build | automated | Run `npm run test:catalog-provisioning` and `npm run build` | Tests and production bundle compile successfully | Local development environment | Pass. Catalog suite 10/10; Vite production build completed. Vite emitted its large-chunk warning for the local extraction/PDF assets. |
+
+### F07 limits
+
+- No local PostgreSQL service was available for a live integration test. Provisioning tests use a transactional database-client double and do not claim PostgreSQL runtime integration.
+- The hosted development catalog was not modified. Its current values remain synthetic; intended site values are not available in this repository and have not been provisioned.
+- No production database was accessed or changed. The CLI requires explicit environment/workspace confirmation and additional flags for remote or production targets; these controls do not establish production readiness.

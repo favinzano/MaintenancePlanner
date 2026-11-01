@@ -1,0 +1,13 @@
+{
+  "workspaceId": "00000000-0000-4000-8000-000000000001",
+  "locations": [
+    {
+      "name": "Sample Plant East",
+      "areas": ["Packaging", "Utilities"]
+    },
+    {
+      "name": "Sample Plant West",
+      "areas": ["Processing", "Warehouse"]
+    }
+  ]
+}

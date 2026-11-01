@@ -4,7 +4,7 @@ Assessment date: 2026-11-01
 
 Assessment basis: `replica/features.csv`, the PlannerMC MVP specification, the current implementation notes, and QA evidence in `replica/test-plan.md`.
 
-Refresh: rerun on 2026-11-01 after issue 07 (PM draft deletion). The installed `replica-diff` parity script returned 66.7/100 from `diffs/plannermc-scope.csv`: four of nine must-haves complete, four partial, and one not implemented. Issue 07 is covered by the existing review/version-lifecycle row, so it did not change the score. Source provenance remains partial while external-source references are deferred.
+Refresh: reviewed on 2026-11-01 after issue 08 (workspace catalog provisioning). The PlannerMC-only matrix remains 66.7/100: four of nine must-haves complete, four partial, and one not implemented. Issue 08 adds the provisioning method, but the first row remains partial until real workspace location/area values are supplied and verified. Source provenance remains partial while external-source references are deferred.
 
 ## Result
 
@@ -18,7 +18,7 @@ The reproducible tool input is [`diffs/plannermc-scope.csv`](diffs/plannermc-sco
 
 | MVP requirement | Status | Evidence and remaining gap |
 | --- | --- | --- |
-| Analyze one equipment with location and area | Partial | Intake and persistence are implemented in authenticated development. Locations and areas use synthetic seed data; operational catalog provisioning is not implemented. |
+| Analyze one equipment with location and area | Partial | Intake and workspace-scoped catalog reading are implemented. An operator-only transactional manifest provisioner now has automated coverage. The active development catalog still uses synthetic seed data; intended site values have not been supplied or loaded. |
 | Use manuals, external research, or planner data as PM sources | Partial | Planner notes and the manual flow exist. PDF/DOCX/image extraction ran locally; a synthetic PDF was saved, read back, reopened, reviewed, and referenced in a PM. New uploads currently fail closed because byte/page limits are unset. External research and technical generation are deferred. |
 | Preserve source provenance, evidence references, and limitations | Partial | Planner/manual source metadata, applicability, locators, review state, and limitations persist. Reviewed applicable sources can be linked to individual PM fields and appear in preview/copy and retained snapshots. Extracted manual text remains in the browser. External-source references are absent while research is deferred. |
 | Propose direct sub-assets under equipment | Yes | The equipment root and its direct children can be edited, individually confirmed, and saved. Deeper hierarchy is not supported. |
@@ -47,12 +47,12 @@ The parity tool ranks only the nine PlannerMC must-haves, not out-of-scope vendo
 These are the parity tool's five incomplete must-haves, in its priority order. The ranking identifies scope gaps, not five immediately executable tickets; the gates below come from the accepted architecture and product decisions.
 
 1. **Bilingual text and voice conversation — not implemented.** Text conversation, language preference, and speech are absent. Speech is deferred under [ADR 0002](../docs/adr/0002-local-manual-extraction.md). A complete conversation flow depends on Q1 hosting/browser support, Q2 provider and data handling, and Q5 audio/transcript retention; Q3 limits also apply to any audio transfer. This bundled feature is not ready to implement as specified.
-2. **Single-equipment intake with operational location and area — partial.** Authenticated intake works, but the current location/area catalog is synthetic. Q4 leaves the catalog source and provisioning method open, and no real site catalog is recorded here.
+2. **Single-equipment intake with operational location and area — partial.** Authenticated intake and the Q4 operator-provisioning method are implemented. The current location/area catalog remains synthetic because no real site catalog has been provided or loaded.
 3. **PM content generation — partial.** The editor supports planner-authored fields but does not generate or technically validate instructions. Generation remains deferred under ADR 0002 until Q2 provider/data-handling policy and an authorized validation corpus are resolved.
 4. **Manual, OEM, external-research, or planner sources — partial.** Planner notes and local manual extraction exist. New uploads fail closed until Q3 byte/page limits and capacity are measured; production also needs the documented backup and restore gates. External research remains deferred under Q2.
 5. **Source provenance and evidence references — partial.** Field-level citations link PM fields to reviewed applicable planner/manual sources. External-source references depend on Q2 research policy and remain absent. A citation records planner selection; it does not establish technical correctness.
 
-**Recommended next `/replica-build` candidate [Inference]:** resolve Q4 and make the preconfigured location/area catalog usable through an operator-managed provisioning path, then verify intake against that catalog. This is the highest-ranked gap with an incremental path that does not require an AI, search, or speech provider. The real location/area values must come from the intended workspace; they are not available in the current repository, so no operational values should be fabricated.
+**Q4 implementation status:** the operator-managed provisioning method is accepted under [ADR 0003](../docs/adr/0003-operator-managed-workspace-catalog.md), and issue 08 implements the local CLI plus workspace-scoped intake reader. The real location/area values must come from the intended workspace; they are not available in the current repository, so no operational values have been fabricated. Coverage remains partial until those values are supplied, provisioned, and verified against the intended workspace.
 
 ## Layout and behavior comparison
 
@@ -92,7 +92,7 @@ The current QA evidence is summarized in [`test-plan.md`](test-plan.md). It reco
 
 ## Recommended next workflow step
 
-**[Inference] Continue with `/replica-build` by preparing the Q4 catalog-provisioning slice.** Record the operator-managed loading method and obtain the intended workspace's real location/area values before replacing synthetic entries. The top-ranked conversation feature and PM generation remain gated by provider/data-handling decisions; research and voice remain deferred under ADR 0002. Field citations record planner selection and do not establish technical correctness.
+**[Inference] Continue with `/replica-test` for the Q4 provisioning slice.** Automated unit tests cover manifest validation, explicit target confirmation, transactions, rollback, idempotent upserts, post-commit read-back, and workspace-scoped catalog loading. A live PostgreSQL integration run remains outstanding because the local database is not available in this environment. After integration QA, obtain the intended workspace's real location/area values before provisioning them. The top-ranked conversation feature and PM generation remain gated by provider/data-handling decisions; research and voice remain deferred under ADR 0002. Field citations record planner selection and do not establish technical correctness.
 
 Production uploads remain gated by capacity, numeric limits, backups, retention, and a restore test.
 

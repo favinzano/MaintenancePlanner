@@ -7,7 +7,7 @@
 
 This document records the approved MVP technical choices and the remaining operational choices. It does not establish that a production project exists or that any service has been deployed. `schema.sql` is the broader relational proposal; `supabase/migrations/` contains the implemented planner-data subset for the current slice.
 
-**Stack summary:** one PlannerMC web/API application using React/Vite + TypeScript and Fastify + TypeScript, backed by managed Supabase Auth and PostgreSQL. External content providers and PlannerMC app hosting remain open where Q1–Q6 apply.
+**Stack summary:** one PlannerMC web/API application using React/Vite + TypeScript and Fastify + TypeScript, backed by managed Supabase Auth and PostgreSQL. The operator-managed catalog bootstrap path is accepted in [ADR 0003](../docs/adr/0003-operator-managed-workspace-catalog.md); external content providers and PlannerMC app hosting remain open where Q1–Q6 apply.
 
 ## Stack
 
@@ -49,7 +49,7 @@ The proposed PostgreSQL schema contains **18 tables**. See [schema.sql](./schema
 
 | Area | Tables | Important invariants |
 | --- | --- | --- |
-| Identity and catalog | `workspaces`, `users`, `user_preferences`, `locations`, `areas` | One planner identity per account; es/en conversation preference; each area references a location in the same workspace. Catalog provisioning remains Q4. |
+| Identity and catalog | `workspaces`, `users`, `user_preferences`, `locations`, `areas` | One planner identity per account; es/en conversation preference; each area references a location in the same workspace. Operator provisioning follows ADR 0003; actual site values are provided per workspace. |
 | Analysis and evidence | `analyses`, `original_documents`, `sources`, `planner_decisions`, `pending_issues` | One equipment analysis; originals are retained; sources carry applicability and locators; decisions refer to the version presented; unresolved issues remain explicit. |
 | Assets | `assets`, `asset_change_proposals` | One equipment root per analysis; only direct sub-assets; possible duplicates are indexed for warning, not blocked by unique name/serial constraints. |
 | PM lifecycle | `pms`, `pm_versions`, `technical_validations` | Draft edits use `row_version`; approved snapshots receive revision numbers; each PM has one current-approved pointer; technical consultation is optional. |
@@ -124,7 +124,7 @@ This table combines target API routes and Supabase Auth client operations. The i
 - **Search and evidence:** no vector database initially (D7). Preserve source URI, model/applicability, locator, extraction gaps and field-to-source links. Retrieval failure is distinct from no matching source.
 - **AI/content safety:** provider output is an untrusted candidate. Validate structure and source references; it has no write permission. A planner decision is linked to the exact presented version and does not make unsupported evidence true.
 - **Realtime/offline:** neither is specified. Browser edits must handle reload/recovery and concurrent-session conflicts; no offline-write guarantee is proposed.
-- **Multi-tenancy:** workspace plus owner scoping on all repository operations, foreign-key consistency, and no client-trusted ownership identifiers. Account invitation policy is accepted; initial catalog provisioning remains open under Q4.
+- **Multi-tenancy:** workspace plus owner scoping on all repository operations, foreign-key consistency, and no client-trusted ownership identifiers. Account invitation policy is accepted; operator catalog provisioning follows ADR 0003.
 - **Audio/privacy:** transient processing is the proposal until Q5. No voice recording archive, transcript history, or vendor retention assertion is made.
 - **Backups/recovery:** select a Supabase plan with database backups and complete a restore test before production uploads. Backup retention, capacity, and recovery targets remain open under Q6. Do not claim that durable primary storage alone meets recovery expectations; no retention purge can be used to satisfy the agreed preservation behavior.
 - **External service limits:** provider quotas, payload limits, timeouts, pricing, and retention stay undecided with Q2/Q3/Q5. Adapter failures must preserve the draft/evidence and offer a planner choice.
@@ -147,4 +147,4 @@ Each milestone lists proposed screens (S-IDs), tables, and routes. These S-IDs n
 
 ## Next flow step
 
-The first planner-data and manual-intake slices, plus hosted development QA, are recorded in [build-log.md](./build-log.md). The PM revision lifecycle is implemented and verified against local prototype storage and the migrated `plannermc-dev` project; production remains untouched. The `/replica-diff` assessment is recorded in [parity.md](./parity.md): it scores implementation coverage against PlannerMC's own MVP scope and does not claim parity with iMPS, GWOS-AI, or another original application. Invitation delivery remains unverified until SMTP is configured; production hosting, catalog provisioning, and deployment remain unconfigured. The MacroCap Labs logo is referenced from the URL recorded in [brand-reference.md](./brand-reference.md); hosting and reuse terms remain unverified.
+The first planner-data and manual-intake slices, plus hosted development QA, are recorded in [build-log.md](./build-log.md). The PM revision lifecycle is implemented and verified against local prototype storage and the migrated `plannermc-dev` project; production remains untouched. The `/replica-diff` assessment is recorded in [parity.md](./parity.md): it scores implementation coverage against PlannerMC's own MVP scope and does not claim parity with iMPS, GWOS-AI, or another original application. Operator catalog provisioning is implemented under ADR 0003; loading real workspace values remains pending. Invitation delivery remains unverified until SMTP is configured; production hosting and deployment remain unconfigured. The MacroCap Labs logo is referenced from the URL recorded in [brand-reference.md](./brand-reference.md); hosting and reuse terms remain unverified.

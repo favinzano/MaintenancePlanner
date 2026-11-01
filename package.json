@@ -13,6 +13,7 @@
     "build": "tsc -b && tsc -p tsconfig.server.build.json && vite build",
     "test:server-validation": "node --import tsx --test server/save-validation.test.ts server/pm-canonical.test.ts server/pm-draft-deletion.test.ts",
     "test:server-manual": "node --import tsx --test server/manual-validation.test.ts",
+    "test:catalog-provisioning": "node --import tsx --test scripts/catalog-provisioning.test.mjs server/catalog-repository.test.ts",
     "test:domain": "node --import tsx --test src/domain/planner.test.ts",
     "test:e2e": "playwright test",
     "start": "node dist-server/server/index.js",
@@ -20,7 +21,8 @@
     "db:start": "npx supabase start",
     "db:stop": "npx supabase stop",
     "db:reset": "npx supabase db reset",
-    "invite-user": "node scripts/invite-user.mjs"
+    "invite-user": "node scripts/invite-user.mjs",
+    "catalog:provision": "node scripts/provision-catalog.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
