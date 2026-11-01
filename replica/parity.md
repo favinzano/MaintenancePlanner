@@ -1,10 +1,10 @@
 # PlannerMC feature coverage and comparison limits
 
-Assessment date: 2026-10-31
+Assessment date: 2026-11-01
 
 Assessment basis: `replica/features.csv`, the PlannerMC MVP specification, the current implementation notes, and QA evidence in `replica/test-plan.md`.
 
-Refresh: rerun after issue 06 (field-level PM evidence citations) on 2026-10-31. The result remains 66.7/100 because source provenance is still partial while external-source references are deferred; the must-have count remains four of nine complete.
+Refresh: rerun on 2026-11-01 after issue 07 (PM draft deletion). The installed `replica-diff` parity script returned 66.7/100 from `diffs/plannermc-scope.csv`: four of nine must-haves complete, four partial, and one not implemented. Issue 07 is covered by the existing review/version-lifecycle row, so it did not change the score. Source provenance remains partial while external-source references are deferred.
 
 ## Result
 
@@ -44,19 +44,39 @@ The parity tool ranks only the nine PlannerMC must-haves, not out-of-scope vendo
 
 ## Top five gaps in build order
 
-These are the parity tool's five incomplete must-haves, in its priority order. This ranking is a guide; dependencies and the accepted data policy still determine which slice can be implemented next.
+These are the parity tool's five incomplete must-haves, in its priority order. The ranking identifies scope gaps, not five immediately executable tickets; the gates below come from the accepted architecture and product decisions.
 
-1. **Bilingual text and voice conversation — not implemented.** Text conversation, language preference, and speech are absent. Speech recognition/synthesis are deferred under [ADR 0002](../docs/adr/0002-local-manual-extraction.md); architecture Q1–Q3/Q5 also leave hosting, provider/data handling, and audio retention decisions open.
-2. **Single-equipment intake with operational location and area — partial.** The authenticated intake works, but its current location and area catalog is synthetic. Catalog source and provisioning remain open under Q4.
-3. **PM content generation — partial.** The editor supports planner-authored fields but does not generate or technically validate instructions. Generation remains deferred under ADR 0002 pending a data-handling/provider decision.
-4. **Manual, OEM, external-research, or planner sources — partial.** Planner notes and local manual extraction exist. Uploads fail closed until numeric limits are configured; external research remains deferred.
-5. **Source provenance and evidence references — partial.** Field-level citations now link PM fields to reviewed applicable planner/manual sources. External-source references remain absent while research is deferred; a citation records planner selection and does not establish technical correctness.
+1. **Bilingual text and voice conversation — not implemented.** Text conversation, language preference, and speech are absent. Speech is deferred under [ADR 0002](../docs/adr/0002-local-manual-extraction.md). A complete conversation flow depends on Q1 hosting/browser support, Q2 provider and data handling, and Q5 audio/transcript retention; Q3 limits also apply to any audio transfer. This bundled feature is not ready to implement as specified.
+2. **Single-equipment intake with operational location and area — partial.** Authenticated intake works, but the current location/area catalog is synthetic. Q4 leaves the catalog source and provisioning method open, and no real site catalog is recorded here.
+3. **PM content generation — partial.** The editor supports planner-authored fields but does not generate or technically validate instructions. Generation remains deferred under ADR 0002 until Q2 provider/data-handling policy and an authorized validation corpus are resolved.
+4. **Manual, OEM, external-research, or planner sources — partial.** Planner notes and local manual extraction exist. New uploads fail closed until Q3 byte/page limits and capacity are measured; production also needs the documented backup and restore gates. External research remains deferred under Q2.
+5. **Source provenance and evidence references — partial.** Field-level citations link PM fields to reviewed applicable planner/manual sources. External-source references depend on Q2 research policy and remain absent. A citation records planner selection; it does not establish technical correctness.
+
+**Recommended next `/replica-build` candidate [Inference]:** resolve Q4 and make the preconfigured location/area catalog usable through an operator-managed provisioning path, then verify intake against that catalog. This is the highest-ranked gap with an incremental path that does not require an AI, search, or speech provider. The real location/area values must come from the intended workspace; they are not available in the current repository, so no operational values should be fabricated.
 
 ## Layout and behavior comparison
 
-No layout score is available: `replica/screens/` contains no matching original workflow captures, and no original application has been selected for a screen-by-screen comparison. Existing `clone-screens/` images document PlannerMC only. The MacroCap sign-in image is a brand reference, not a workflow match.
+No layout score is available. `replica/screens/` has zero reference screenshots, and no original application has been selected for screen-by-screen comparison. The existing captures document PlannerMC only. Their native PNG dimensions are not a paired-viewport comparison.
 
-No original-versus-clone behavior diff is claimed. There is no paired original walkthrough to compare clicks, errors, retained state, or email behavior. Vendor feature evidence in `features.csv` comes from published descriptions and is not direct observation. PlannerMC's own verified behavior is recorded in [`test-plan.md`](test-plan.md).
+| PlannerMC screen | Clone capture | Original capture | Layout score |
+| --- | --- | --- | --- |
+| S01 entry | `S01-entry.png` (1440×1000) | None | N/A |
+| S02 intake | `S02-intake.png` (1425×1197) | None | N/A |
+| S03 evidence | `S03-evidence.png` (1425×1114) | None | N/A |
+| S04 assets | `S04-assets.png` (1425×1008) | None | N/A |
+| S05 PM editor/review | Multiple desktop and mobile states | None | N/A |
+| S06 PM split proposal | Desktop/mobile captures | None | N/A |
+| S07 PM draft deletion | Desktop/mobile captures | None | N/A |
+
+No original-versus-clone behavior diff is claimed. There is no paired original walkthrough to compare clicks, errors, retained state, or email behavior. Vendor feature evidence in `features.csv` comes from published descriptions, not direct observation. PlannerMC's own verified behavior is recorded in [`test-plan.md`](test-plan.md).
+
+| Flow | Original behavior observed | PlannerMC evidence | Difference |
+| --- | --- | --- | --- |
+| Intake and catalog | No original flow selected or observed | Authenticated development intake; catalog values are synthetic | N/A |
+| Evidence and manual review | No original flow selected or observed | Planner/manual evidence flow and local extraction QA | N/A |
+| Assets and PM authoring | No original flow selected or observed | Direct-child assets, PM drafts, citations, and split proposal are documented | N/A |
+| Approval, revisions, and deletion | No original flow selected or observed | Local and synthetic development lifecycle QA is documented | N/A |
+| Copy to CMMS | No original flow selected or observed | Clipboard-only output; no CMMS write | N/A |
 
 ## Comparison with external products
 
@@ -72,10 +92,10 @@ The current QA evidence is summarized in [`test-plan.md`](test-plan.md). It reco
 
 ## Recommended next workflow step
 
-**[Inference] Continue with `/replica-build` by selecting an unblocked remaining gap.** The highest-ranked bilingual text/voice requirement depends on language and provider decisions; speech remains deferred under ADR 0002. The operational catalog is another partial gap whose source/provisioning decision is open. Research and technical generation remain deferred. Field citations record planner selection and do not establish technical correctness.
+**[Inference] Continue with `/replica-build` by preparing the Q4 catalog-provisioning slice.** Record the operator-managed loading method and obtain the intended workspace's real location/area values before replacing synthetic entries. The top-ranked conversation feature and PM generation remain gated by provider/data-handling decisions; research and voice remain deferred under ADR 0002. Field citations record planner selection and do not establish technical correctness.
 
 Production uploads remain gated by capacity, numeric limits, backups, retention, and a restore test.
 
 ## Run boundary
 
-This assessment was generated with the local `replica-diff` parity script against `diffs/plannermc-scope.csv` and includes the hosted development QA, full local Playwright suite, and focused PM split test recorded in the 2026-10-31 build log and `test-plan.md`. It measures PlannerMC implementation coverage, not comparison with a vendor application. Production behavior was not tested.
+The parity score was rerun with the local `replica-diff` script against `diffs/plannermc-scope.csv` on 2026-11-01. Feature statuses and QA statements are taken from the current matrix, build log, and `test-plan.md`; browser/API QA was not rerun for this report refresh. It measures PlannerMC implementation coverage, not comparison with a vendor application. Production behavior was not tested.
