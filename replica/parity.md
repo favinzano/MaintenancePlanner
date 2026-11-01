@@ -59,7 +59,15 @@ On 2026-11-01, a TLS-verified PostgreSQL session against the repository-mapped `
 
 Supabase's current published Free-plan database-size quota is 500 MB per project; its docs distinguish that quota from the 2 GB provisioned disk on Free projects. Original manuals are stored in PostgreSQL `BYTEA`, so database-size usage is relevant, while the file-storage quota does not describe this table. See [Supabase billing quotas](https://supabase.com/docs/guides/platform/billing-on-supabase) and [database size vs. disk usage](https://supabase.com/docs/guides/platform/database-size). The measured development size is a baseline only. It does not establish the project's current billing plan, remaining disk headroom, manual extraction performance, or safe per-file/page/total limits.
 
-Numeric limits remain unset and new uploads remain fail-closed until representative manuals are profiled locally. The next tracked action is [issue 10](../.scratch/replica-build/issues/10-manual-capacity-bounds.md). Its sample files must stay outside version control; no manual bytes or extracted text should be sent to an external service.
+### Local PDF profiling on 2026-11-01
+
+The user-provided local archive contained 20 PDFs and no DOCX or image files. The PDFs were 344,937–2,951,262 bytes and 3–25 pages, with 173 pages total. PDF.js found no selectable text on any page; all 173 pages therefore followed the scanned-page OCR branch. All 20 PDFs opened successfully for page and text-presence inspection.
+
+Three representative PDFs were processed sequentially through PlannerMC's existing browser extraction function in isolated Chromium. The 6-page, 885,297-byte sample took 19.6 seconds; the 11-page, 2,951,262-byte largest-file sample took 39.1 seconds; and the 25-page, 1,103,087-byte largest-page-count sample took 33.4 seconds. The sum was 92.1 seconds for 42 OCR pages. Chromium's `performance.memory.usedJSHeapSize` reached 193,775,703 bytes (about 184.8 MiB) during the run. This JS-heap reading is not total browser-process memory and does not reliably represent WebAssembly/native allocations. One HTTP request outside the allow-listed local origin was blocked; the browser allowed no outside-origin requests, reported no page errors, and made no Supabase call. Temporary sanitized copies were deleted after profiling; the user-provided archive remained unchanged.
+
+This supports a PDF-specific development candidate, not a limit across every approved format. [Inference] A 4 MiB per-file ceiling would provide about 42% headroom over the largest supplied PDF; a 25-page ceiling covers the largest supplied document; a 100 MiB total-originals cap would reserve most of the published 500 MB Free-plan database quota. These values are not activated because the shared per-file ceiling also applies to DOCX and images, which were not present. Confirm whether the development pilot needs those formats or provide representative local samples before enabling uploads.
+
+The tracked follow-up is [issue 10](../.scratch/replica-build/issues/10-manual-capacity-bounds.md). Keep samples outside version control, and do not send manual bytes or extracted text to an external service.
 
 ## Layout and behavior comparison
 
