@@ -2,6 +2,26 @@
 
 ## Fixed
 
+### QA-08: Conversation language help text was outside a landmark
+
+- Severity: S3
+- Flow / case: F02-E1
+- Screen: Evidence intake at mobile width
+- Build: local worktree  Browser / device: Playwright Chromium 159.0.8136.0, local prototype
+
+Steps
+1. Open the local prototype at 390×844 CSS px.
+2. Start an analysis and submit the required planner details to open Evidence.
+3. Run the axe accessibility scan.
+
+Expected: The screen has no accessibility violations.
+
+Actual: axe 4.14.0 reported the `region` rule because the screen-reader-only conversation-language description was a paragraph outside every landmark. The local prototype did not render either language selector, so the orphaned description was unnecessary there.
+
+Evidence: The first Playwright run failed the `region` rule against `#conversation-language-help`. The mobile selector now references its visible help text, and the desktop selector has a self-describing label. The focused responsive case passed after the change; the full suite then passed 12/12.
+
+Status: Fixed in the current worktree; commit pending.
+
 ### QA-03: PM preview scroll region could not receive keyboard focus
 
 - Severity: S2

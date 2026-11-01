@@ -17,7 +17,12 @@ export default defineConfig({
     name: "chromium",
     use: {
       ...devices["Desktop Chrome"],
-      ...(chromiumExecutablePath ? { launchOptions: { executablePath: chromiumExecutablePath } } : {}),
+      ...(chromiumExecutablePath ? {
+        launchOptions: {
+          executablePath: chromiumExecutablePath,
+          ...(process.env.PLAYWRIGHT_CHROMIUM_NO_SANDBOX === "true" ? { args: ["--no-sandbox"] } : {}),
+        },
+      } : {}),
     },
   }],
   webServer: {

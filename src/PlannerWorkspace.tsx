@@ -755,8 +755,8 @@ function PlannerWorkspace() {
           <div className="ml-auto flex items-center gap-2">
             <span className="hidden text-xs text-muted sm:inline">{backendMode ? accountEmail : "MacroCap Labs identity"}</span>
             {backendMode && <div className="hidden items-center gap-2 lg:flex">
-              <label htmlFor="conversation-language-desktop" className="text-xs text-muted">Conversation</label>
-              <select id="conversation-language-desktop" aria-describedby="conversation-language-help" value={conversationLanguage} disabled={preferenceSaving || loading} onChange={(event) => void changeConversationLanguage(event.target.value as ConversationLanguage)} className="min-h-9 w-28 rounded-control border border-border-input bg-panel-muted px-2 py-1 text-xs text-foreground">
+              <label htmlFor="conversation-language-desktop" className="text-xs text-muted">Conversation language</label>
+              <select id="conversation-language-desktop" value={conversationLanguage} disabled={preferenceSaving || loading} onChange={(event) => void changeConversationLanguage(event.target.value as ConversationLanguage)} className="min-h-9 w-28 rounded-control border border-border-input bg-panel-muted px-2 py-1 text-xs text-foreground">
                 <option value="en">English</option>
                 <option value="es">Español</option>
               </select>
@@ -775,15 +775,13 @@ function PlannerWorkspace() {
         {backendMode && <div className="flex items-center justify-between gap-3 border-b border-border bg-panel-muted px-4 py-2 lg:hidden">
           <div className="min-w-0">
             <label htmlFor="conversation-language-mobile" className="block text-xs font-medium text-foreground">Conversation language</label>
-            <p className="text-xs leading-5 text-muted">For future conversational prompts; the interface and PMs stay in English.</p>
+            <p id="conversation-language-help" className="text-xs leading-5 text-muted">For future conversational prompts; the interface and PMs stay in English.</p>
           </div>
           <select id="conversation-language-mobile" aria-describedby="conversation-language-help" value={conversationLanguage} disabled={preferenceSaving || loading} onChange={(event) => void changeConversationLanguage(event.target.value as ConversationLanguage)} className="min-h-8 shrink-0 rounded-control border border-border-input bg-panel-muted px-2 text-xs text-foreground">
             <option value="en">English</option>
             <option value="es">Español</option>
           </select>
         </div>}
-
-        <p id="conversation-language-help" className="sr-only">Saved for future conversational prompts. The PlannerMC interface and PM documents remain in English.</p>
 
         <main id="workspace" className="mx-auto max-w-6xl px-4 pb-16 pt-7 sm:px-7 sm:pt-9">
           <div className="mb-7 flex flex-wrap items-end justify-between gap-4 border-b border-border pb-6">
